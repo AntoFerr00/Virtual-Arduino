@@ -1,0 +1,36 @@
+{
+  "components": [
+    {
+      "id": "Button_1783283043579",
+      "type": "Button",
+      "x": 3.4793828449192805,
+      "z": 1.665265246356318,
+      "state": 0,
+      "value": ""
+    },
+    {
+      "id": "LED_1783283048706",
+      "type": "LED",
+      "x": 3.336134410953849,
+      "z": 2.7756026291812335,
+      "state": 0,
+      "value": ""
+    }
+  ],
+  "wires": [
+    {
+      "id": "w_1783283069294",
+      "startCompId": "BOARD",
+      "startPinId": "4",
+      "endCompId": "Button_1783283043579",
+      "endPinId": "1"
+    },
+    {
+      "id": "w_1783283074948",
+      "startCompId": "BOARD",
+      "startPinId": "5",
+      "endCompId": "LED_1783283048706",
+      "endPinId": "C"
+    }
+  ]
+}
