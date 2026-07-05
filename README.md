@@ -2,7 +2,7 @@
 
 A powerful, interactive 3D Arduino simulator built with React Three Fiber, Electron, and the Arduino CLI. This application allows you to build, wire, and write code for your own electronic circuits completely virtually, rendering everything in a beautiful interactive 3D environment.
 
-![Virtual Arduino Simulator](docs/preview.png) *(Add a screenshot of your app here)*
+![Virtual Arduino Simulator](Presentation.png)
 
 ## ✨ Features
 
