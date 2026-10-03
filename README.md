@@ -7,7 +7,11 @@ A powerful, interactive 3D Arduino simulator built with React Three Fiber, Elect
 ## ✨ Features
 
 - **Interactive 3D Environment**: Orbit, pan, and zoom around a fully rendered 3D workspace powered by `@react-three/fiber`.
-- **Advanced Electrical Routing Engine**: Unlike simple point-to-point simulators, this app features a true graph-based electrical routing engine. Signals travel realistically across wires, through breadboard rows, and power rails.
+- **Real Circuit Physics**: The circuit is solved electrically ~50 times a second (nodal analysis with Newton-Raphson for LEDs, diodes and transistors, time stepping for capacitors and inductors). Voltages and currents follow Ohm's and Kirchhoff's laws, through wires, breadboard rows and power rails.
+  - The UNO Q's GPIOs are 3.3 V outputs with a realistic output resistance and a 20 mA limit. The 5V, 3V3 and 1V8 rails switch off on a short circuit.
+  - Inputs read the real node voltage, with Schmitt-trigger thresholds. `INPUT_PULLUP`/`INPUT_PULLDOWN` are supported, a floating input reads random values, and `analogRead()` returns the actual voltage (10-bit).
+  - Parts have real ratings and **burn out** when overloaded. For example, an LED without a series resistor on 5 V, a 10 Ω resistor across 5 V, or a reversed electrolytic capacitor. A burnt part can be replaced from its properties panel.
+  - Warnings explain what is wrong: pin overcurrent, floating inputs, 5 V on A0/A1, a motor driven straight from a pin, and more.
 - **Component Library**: Includes a wide array of interactive components:
   - **Inputs**: Pushbuttons, Slide Switches, Potentiometers.
   - **Outputs**: LEDs, Buzzers, DC Motors, Servo Motors, OLED Displays.
@@ -51,9 +55,10 @@ Before running this project, ensure you have [Node.js](https://nodejs.org/) inst
 1. **Add Components**: Use the dropdown in the top-left toolbar to add an Arduino, breadboard, LEDs, etc.
 2. **Move Components**: Drag any component directly across the 3D table.
 3. **Wire Components**: Click on any pin, breadboard hole, or component leg to start a wire. Click on any other pin to connect them. The wire will dynamically follow your cursor.
-4. **Delete wires/components**: Hover over a wire and click it to delete it, or right-click a component to delete it via a confirmation prompt. You can also edit component properties (like resistance or capacitance) in the right-hand panel.
-5. **Write Code**: Use the integrated code editor to write standard Arduino C++.
-6. **Simulate**: Click the green "Run" button! Your code will compile and execute, sending real-time signals back and forth between the C++ engine and the 3D frontend.
+4. **Delete wires/components**: Hover over a wire and click it to delete it, or right-click a component to delete it via a confirmation prompt.
+5. **Inspect and edit parts**: Click a component to open its panel. It shows the live voltage, current and power against the part's rating, and lets you edit values (resistance, capacitance, LED colour…).
+6. **Write Code**: Use the integrated code editor to write standard Arduino C++.
+7. **Simulate**: Click the green "Run" button! Your code will compile and execute, sending real-time signals back and forth between the C++ engine and the 3D frontend. Wire things as you would on a real bench. `circuit_test.json` contains the example circuit for the default sketch: a button from D4 to GND using `INPUT_PULLUP`, and an LED on D5 with a 220 Ω resistor.
 
 ## 🤝 Contributing
 

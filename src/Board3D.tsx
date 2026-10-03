@@ -5,8 +5,11 @@ import * as THREE from 'three';
 import { useDrag } from '@use-gesture/react';
 import { ExternalComponent, Wire } from './App';
 import { UnoQBoard, PINS, SILK_FONT } from './UnoQBoard';
+import type { SimOutput, CompResult } from './circuit/simulator';
+import { parseValue } from './circuit/units';
 
 interface Board3DProps {
+  sim?: SimOutput | null;
   ledState: number;
   matrixFrame: number[][];
   rgb1: number[];
@@ -98,7 +101,7 @@ function getCompPinOffset(type: string, pinId?: string): [number, number, number
     case 'Capacitor': return pinId === '-' ? [-0.1, 0.2, 0] : [0.1, 0.2, 0];
     case 'Inductor': return pinId === '1' ? [-0.4, 0.1, 0] : [0.4, 0.1, 0];
     case 'Diode': return pinId === 'A' ? [-0.4, 0.1, 0] : [0.4, 0.1, 0];
-    case 'Transistor': return pinId === 'C' ? [-0.15, 0.2, 0] : pinId === 'B' ? [0, 0.2, 0] : [0.15, 0.2, 0];
+    case 'Transistor': return pinId === 'E' ? [-0.15, 0.2, 0] : pinId === 'B' ? [0, 0.2, 0] : [0.15, 0.2, 0];
     case 'Potentiometer': return pinId === '1' ? [-0.2, 0.1, 0.3] : pinId === '2' ? [0, 0.1, 0.3] : [0.2, 0.1, 0.3];
     case 'Switch': return pinId === '1' ? [-0.3, 0.1, 0.2] : pinId === '2' ? [0, 0.1, 0.2] : [0.3, 0.1, 0.2];
     case 'Buzzer': return pinId === '-' ? [-0.1, 0.2, 0] : [0.1, 0.2, 0];
@@ -109,25 +112,54 @@ function getCompPinOffset(type: string, pinId?: string): [number, number, number
   }
 }
 
-function ExtLED({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
-  const ref = useRef<THREE.MeshStandardMaterial>(null);
+// Wisps of smoke rising from a part the simulation burnt out.
+function Smoke({ y = 0.6 }: { y?: number }) {
+  const group = useRef<THREE.Group>(null);
+  useFrame(({ clock }) => {
+    group.current?.children.forEach((m, i) => {
+      const t = (clock.elapsedTime * 0.35 + i / 3) % 1;
+      m.position.set(Math.sin(t * 6 + i) * 0.06, y + t * 0.9, Math.cos(t * 5 + i) * 0.06);
+      m.scale.setScalar(0.08 + t * 0.22);
+      ((m as THREE.Mesh).material as THREE.MeshStandardMaterial).opacity = 0.45 * (1 - t);
+    });
+  });
+  return (
+    <group ref={group} raycast={() => null}>
+      {[0, 1, 2].map(i => (
+        <mesh key={i} raycast={() => null}>
+          <sphereGeometry args={[1, 12, 12]} />
+          <meshStandardMaterial color="#6b6b6b" transparent opacity={0.4} depthWrite={false} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function ExtLED({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
+  const r = sim as CompResult | undefined;
+  const ledColor = useMemo(() => new THREE.Color(r?.color ?? '#ff2a1a'), [r?.color]);
+  // Perceived brightness grows roughly with the square root of the current.
+  const glow = comp.damaged ? 0 : Math.min(1.6, Math.sqrt(Math.max(0, r?.brightness ?? 0)));
+  // One material for the epoxy body and dome.
+  const lens = useMemo(() => new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.92, roughness: 0.25 }), []);
 
   useFrame(() => {
-    if (ref.current) {
-      const targetColor = comp.state > 0 ? new THREE.Color(0xff0000) : new THREE.Color(0x220000);
-      const targetEmissive = comp.state > 0 ? new THREE.Color(0xff0000) : new THREE.Color(0x000000);
-      ref.current.color.lerp(targetColor, 0.1);
-      ref.current.emissive.lerp(targetEmissive, 0.1);
-      ref.current.emissiveIntensity = comp.state > 0 ? 2 : 0;
-    }
+    const off = comp.damaged ? new THREE.Color('#2a2420') : ledColor.clone().multiplyScalar(0.28);
+    const on = ledColor.clone().lerp(new THREE.Color('#ffffff'), Math.min(0.15, glow * 0.08));
+    lens.color.lerp(glow > 0.02 ? on : off, 0.25);
+    lens.emissive.lerp(glow > 0.02 ? ledColor : new THREE.Color('#000000'), 0.25);
+    lens.emissiveIntensity += (glow * 2.5 - lens.emissiveIntensity) * 0.25;
   });
 
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
       <Cylinder args={[0.02, 0.02, 0.5]} position={[-0.1, 0.25, 0]}><meshStandardMaterial color="#ccc" /></Cylinder>
       <Cylinder args={[0.02, 0.02, 0.5]} position={[0.1, 0.25, 0]}><meshStandardMaterial color="#ccc" /></Cylinder>
-      <Cylinder args={[0.2, 0.2, 0.3]} position={[0, 0.6, 0]}><meshStandardMaterial ref={ref} color="#220000" emissive="#000000" transparent opacity={0.9} /></Cylinder>
+      <mesh position={[0, 0.6, 0]} material={lens}><cylinderGeometry args={[0.2, 0.2, 0.3, 24]} /></mesh>
+      <mesh position={[0, 0.75, 0]} material={lens}><sphereGeometry args={[0.2, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2]} /></mesh>
+      {glow > 0.02 && <pointLight position={[0, 0.9, 0]} color={ledColor} intensity={glow * 0.8} distance={1.5} />}
+      {comp.damaged && <Smoke y={0.9} />}
       <SilkscreenText text="-" position={[-0.1, 0.05, 0.15]} size={0.15} color="#fff" />
       <SilkscreenText text="+" position={[0.1, 0.05, 0.15]} size={0.15} color="#fff" />
       <CompHitbox pos={getCompPinOffset('LED', 'C')} onClick={() => onClick('C')} />
@@ -165,15 +197,31 @@ function ExtButton({ comp, onClick, onRightClick, onInteract, onDragStart, onDra
   );
 }
 
-function ExtResistor({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+// 4-band colour code (digit, digit, multiplier, ±5 % gold) for the resistor's value.
+const BAND_COLORS = ['#111111', '#7a3b10', '#e01b1b', '#f07a10', '#f2d21b', '#1d9b3a', '#1f4fd6', '#7c3aed', '#8a8a8a', '#f5f5f5'];
+function resistorBands(value?: string): string[] {
+  const ohms = parseValue(value);
+  if (!isFinite(ohms) || ohms <= 0) return ['#7a3b10', '#111111', '#f07a10', '#c9a227'];
+  let exp = Math.floor(Math.log10(ohms)) - 1;
+  let digits = Math.round(ohms / Math.pow(10, exp));
+  if (digits >= 100) { digits = Math.round(digits / 10); exp += 1; }
+  const mult = exp < 0 ? (exp === -1 ? '#c9a227' : '#b8b8b8') : BAND_COLORS[Math.min(9, exp)];
+  return [BAND_COLORS[Math.floor(digits / 10)], BAND_COLORS[digits % 10], mult, '#c9a227'];
+}
+
+function ExtResistor({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+  const hot = Math.min(1, Math.max(0, ((sim as CompResult | undefined)?.stress ?? 0) - 0.5));
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
       <Cylinder args={[0.02, 0.02, 1.0]} position={[0, 0.1, 0]} rotation={[0, 0, Math.PI/2]}><meshStandardMaterial color="#ccc" /></Cylinder>
-      <Cylinder args={[0.1, 0.1, 0.6]} position={[0, 0.1, 0]} rotation={[0, 0, Math.PI/2]}><meshStandardMaterial color="#d4a373" /></Cylinder>
-      <Cylinder args={[0.105, 0.105, 0.05]} position={[-0.2, 0.1, 0]} rotation={[0, 0, Math.PI/2]}><meshStandardMaterial color="#8b4513" /></Cylinder>
-      <Cylinder args={[0.105, 0.105, 0.05]} position={[0, 0.1, 0]} rotation={[0, 0, Math.PI/2]}><meshStandardMaterial color="#000" /></Cylinder>
-      <Cylinder args={[0.105, 0.105, 0.05]} position={[0.2, 0.1, 0]} rotation={[0, 0, Math.PI/2]}><meshStandardMaterial color="#ff0000" /></Cylinder>
+      <Cylinder args={[0.1, 0.1, 0.6]} position={[0, 0.1, 0]} rotation={[0, 0, Math.PI/2]}><meshStandardMaterial color={comp.damaged ? '#2b1d14' : '#d4a373'} emissive="#ff3300" emissiveIntensity={comp.damaged ? 0 : hot * 0.8} /></Cylinder>
+      {comp.damaged && <Smoke y={0.25} />}
+      {resistorBands(comp.value).map((color, i) => (
+        <Cylinder key={i} args={[0.105, 0.105, 0.045]} position={[[-0.2, -0.11, -0.02, 0.2][i], 0.1, 0]} rotation={[0, 0, Math.PI/2]}>
+          <meshStandardMaterial color={comp.damaged ? '#1d140e' : color} />
+        </Cylinder>
+      ))}
       <CompHitbox pos={getCompPinOffset('Resistor', '1')} onClick={() => onClick('1')} />
       <CompHitbox pos={getCompPinOffset('Resistor', '2')} onClick={() => onClick('2')} />
     </group>
@@ -188,6 +236,12 @@ function ExtCapacitor({ comp, onClick, onRightClick, onDragStart, onDrag, onDrag
       <Cylinder args={[0.02, 0.02, 0.4]} position={[0.1, 0.2, 0]}><meshStandardMaterial color="#ccc" /></Cylinder>
       <Cylinder args={[0.2, 0.2, 0.5]} position={[0, 0.65, 0]}><meshStandardMaterial color="#1e3a8a" /></Cylinder>
       <Box args={[0.1, 0.5, 0.41]} position={[0, 0.65, 0]}><meshStandardMaterial color="#93c5fd" /></Box>
+      {comp.damaged && (
+        <>
+          <Cylinder args={[0.14, 0.2, 0.08]} position={[0, 0.94, 0]}><meshStandardMaterial color="#3a3a3a" roughness={1} /></Cylinder>
+          <Smoke y={1.0} />
+        </>
+      )}
       <SilkscreenText text="-" position={[-0.1, 0.65, 0.21]} size={0.15} color="#fff" />
       <SilkscreenText text="+" position={[0.1, 0.65, 0.21]} size={0.15} color="#fff" />
       <CompHitbox pos={getCompPinOffset('Capacitor', '-')} onClick={() => onClick('-')} />
@@ -222,6 +276,7 @@ function ExtDiode({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd 
       <SilkscreenText text="K" position={[0.15, 0.25, 0]} size={0.12} color="#fff" />
       <CompHitbox pos={getCompPinOffset('Diode', 'A')} onClick={() => onClick('A')} />
       <CompHitbox pos={getCompPinOffset('Diode', 'K')} onClick={() => onClick('K')} />
+      {comp.damaged && <Smoke y={0.25} />}
     </group>
   );
 }
@@ -238,6 +293,7 @@ function ExtTransistor({ comp, onClick, onRightClick, onDragStart, onDrag, onDra
       <SilkscreenText text="E" position={[-0.15, 0.6, 0.16]} size={0.12} color="#fff" />
       <SilkscreenText text="B" position={[0, 0.6, 0.16]} size={0.12} color="#fff" />
       <SilkscreenText text="C" position={[0.15, 0.6, 0.16]} size={0.12} color="#fff" />
+      {comp.damaged && <Smoke y={0.85} />}
       <CompHitbox pos={getCompPinOffset('Transistor', 'C')} onClick={() => onClick('C')} />
       <CompHitbox pos={getCompPinOffset('Transistor', 'B')} onClick={() => onClick('B')} />
       <CompHitbox pos={getCompPinOffset('Transistor', 'E')} onClick={() => onClick('E')} />
@@ -263,6 +319,7 @@ function ExtPotentiometer({ comp, onClick, onRightClick, onInteract, onDragStart
       <CompHitbox pos={getCompPinOffset('Potentiometer', '1')} onClick={() => onClick('1')} />
       <CompHitbox pos={getCompPinOffset('Potentiometer', '2')} onClick={() => onClick('2')} />
       <CompHitbox pos={getCompPinOffset('Potentiometer', '3')} onClick={() => onClick('3')} />
+      {comp.damaged && <Smoke y={0.7} />}
     </group>
   );
 }
@@ -287,9 +344,9 @@ function ExtSwitch({ comp, onClick, onRightClick, onInteract, onDragStart, onDra
   );
 }
 
-function ExtBuzzer({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+function ExtBuzzer({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
-  const isRing = comp.state > 0;
+  const isRing = !!(sim as CompResult | undefined)?.sounding;
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
       <Cylinder args={[0.02, 0.02, 0.4]} position={[-0.1, 0.2, 0]}><meshStandardMaterial color="#ccc" /></Cylinder>
@@ -306,9 +363,12 @@ function ExtBuzzer({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd
   );
 }
 
-function ExtServo({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+function ExtServo({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
-  const angle = (comp.state / 255) * Math.PI; 
+  const held = useRef(0);
+  const target = (sim as CompResult | undefined)?.angle;
+  if (target !== undefined) held.current = target;
+  const angle = (held.current / 255) * Math.PI;
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
       <Box args={[0.8, 0.6, 0.4]} position={[0, 0.3, 0]}><meshStandardMaterial color="#1e40af" /></Box>
@@ -323,17 +383,17 @@ function ExtServo({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd 
       <CompHitbox pos={getCompPinOffset('Servo', 'GND')} onClick={() => onClick('GND')} />
       <CompHitbox pos={getCompPinOffset('Servo', 'VCC')} onClick={() => onClick('VCC')} />
       <CompHitbox pos={getCompPinOffset('Servo', 'S')} onClick={() => onClick('S')} />
+      {comp.damaged && <Smoke y={0.8} />}
     </group>
   );
 }
 
-function ExtMotor({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+function ExtMotor({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
   const ref = useRef<THREE.Group>(null);
-  useFrame(() => {
-    if (ref.current && comp.state > 0) {
-      ref.current.rotation.x += 0.5;
-    }
+  const speed = (sim as CompResult | undefined)?.speed ?? 0;
+  useFrame((_, delta) => {
+    if (ref.current) ref.current.rotation.x += speed * delta * 30;
   });
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
@@ -350,13 +410,14 @@ function ExtMotor({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd 
   );
 }
 
-function ExtOLED({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+function ExtOLED({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
+  const powered = !!(sim as CompResult | undefined)?.powered;
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
       <Box args={[1.5, 0.1, 1.5]} position={[0, 0.4, 0]}><meshStandardMaterial color="#1e3a8a" /></Box>
       <Box args={[1.2, 0.12, 0.8]} position={[0, 0.4, 0.2]}>
-         <meshStandardMaterial color={comp.state > 0 ? "#111" : "#000"} emissive={comp.state > 0 ? "#222" : "#000"} />
+         <meshStandardMaterial color={powered ? "#0b1a2a" : "#000"} emissive={powered ? "#1d4ed8" : "#000"} emissiveIntensity={powered ? 0.25 : 0} />
       </Box>
       <Cylinder args={[0.02, 0.02, 0.4]} position={[-0.3, 0.2, -0.7]}><meshStandardMaterial color="#ccc" /></Cylinder>
       <Cylinder args={[0.02, 0.02, 0.4]} position={[-0.1, 0.2, -0.7]}><meshStandardMaterial color="#ccc" /></Cylinder>
@@ -366,6 +427,7 @@ function ExtOLED({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }
       <CompHitbox pos={getCompPinOffset('OLED', 'VCC')} onClick={() => onClick('VCC')} />
       <CompHitbox pos={getCompPinOffset('OLED', 'SCL')} onClick={() => onClick('SCL')} />
       <CompHitbox pos={getCompPinOffset('OLED', 'SDA')} onClick={() => onClick('SDA')} />
+      {comp.damaged && <Smoke y={0.6} />}
     </group>
   );
 }
@@ -511,8 +573,8 @@ export default function Board3D(props: Board3DProps) {
 
       {props.components.map(c => {
         const commonProps = {
-          key: c.id,
           comp: c,
+          sim: props.sim?.comps[c.id],
           onClick: (compPin?: string) => {
             if (compPin) {
               handlePinClick(c.id, compPin);
@@ -527,6 +589,7 @@ export default function Board3D(props: Board3DProps) {
           onDragEnd: () => setIsDragging(false),
           onDrag: (x: number, z: number) => props.onComponentMove(c.id, x, z)
         };
+        const part = (() => {
         switch (c.type) {
           case 'LED': return <ExtLED {...commonProps} />;
           case 'Button': return <ExtButton {...commonProps} />;
@@ -544,6 +607,13 @@ export default function Board3D(props: Board3DProps) {
           case 'Breadboard': return <ExtBreadboard {...commonProps} />;
           default: return null;
         }
+        })();
+        // Clicking the body selects the part (pins and controls stop propagation themselves).
+        return (
+          <group key={c.id} onClick={(e) => { e.stopPropagation(); commonProps.onClick(); }}>
+            {part}
+          </group>
+        );
       })}
 
       <OrbitControls makeDefault enabled={!isDragging} minPolarAngle={0} maxPolarAngle={Math.PI} />

@@ -4,20 +4,24 @@ SerialMock Serial;
 static auto startTime = std::chrono::steady_clock::now();
 
 std::map<uint8_t, int> pinStates;
+std::map<uint8_t, int> analogStates;
 std::mutex pinMutex;
 
+// The circuit simulator (in the app) sends the electrical state of every input pin:
+// {"pin": X, "val": <digital level>, "analog": <ADC reading 0-1023>}
 void inputListenerThread() {
     std::string line;
     while (std::getline(std::cin, line)) {
-        // Very basic JSON parser for {"pin": X, "val": Y}
         auto pinPos = line.find("\"pin\":");
         auto valPos = line.find("\"val\":");
+        auto anPos = line.find("\"analog\":");
         if (pinPos != std::string::npos && valPos != std::string::npos) {
             try {
                 int pin = std::stoi(line.substr(pinPos + 6));
                 int val = std::stoi(line.substr(valPos + 6));
                 std::lock_guard<std::mutex> lock(pinMutex);
                 pinStates[pin] = val;
+                if (anPos != std::string::npos) analogStates[pin] = std::stoi(line.substr(anPos + 9));
             } catch (...) {}
         }
     }
@@ -40,8 +44,10 @@ int digitalRead(uint8_t pin) {
 }
 
 int analogRead(uint8_t pin) {
-    // Similarly we could extend this to "analogVal" later
-    return 0;
+    if (pin <= 5) pin += A0; // analogRead(0) == analogRead(A0)
+    std::lock_guard<std::mutex> lock(pinMutex);
+    auto it = analogStates.find(pin);
+    return it != analogStates.end() ? it->second : 0;
 }
 
 void analogWrite(uint8_t pin, int val) {
