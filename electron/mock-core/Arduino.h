@@ -15,6 +15,15 @@
 #define INPUT 0x0
 #define OUTPUT 0x1
 #define INPUT_PULLUP 0x2
+#define INPUT_PULLDOWN 0x3
+
+// Analog inputs (JANALOG): A0-A5 are digital pins 14-19
+#define A0 14
+#define A1 15
+#define A2 16
+#define A3 17
+#define A4 18
+#define A5 19
 
 // Standard Arduino pins
 #define LED_BUILTIN 13

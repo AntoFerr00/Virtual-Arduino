@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import Board3D from './Board3D';
+import { PINS } from './UnoQBoard';
+import { CircuitSimulator, SimOutput, PinDrive, SimWarning, displayNames } from './circuit/simulator';
+import { PIN_MODE, gpioName } from './circuit/board';
+import { DEFAULT_VALUES } from './circuit/components';
+import { PropertiesPanel, WarningsPanel, visualSignature, useBuzzerSound } from './CircuitPanels';
 
 declare global {
   interface Window {
@@ -13,15 +18,15 @@ const DEFAULT_CODE = `void setup() {
   Serial.println("Circuit Simulator Online!");
   
   pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(5, OUTPUT); // External LED on Pin 5
-  pinMode(4, INPUT);  // Pushbutton on Pin 4
+  pinMode(5, OUTPUT);       // D5 -> 220 ohm resistor -> LED -> GND
+  pinMode(4, INPUT_PULLUP); // D4 -> pushbutton -> GND (internal pull-up)
 }
 
 void loop() {
-  // If button on pin 4 is pressed, turn on external LED and built-in LED
+  // With the pull-up, the pin reads LOW while the button is pressed
   int btnState = digitalRead(4);
-  
-  if (btnState == HIGH) {
+
+  if (btnState == LOW) {
     digitalWrite(LED_BUILTIN, HIGH);
     digitalWrite(5, HIGH);
   } else {
@@ -40,8 +45,10 @@ export interface ExternalComponent {
   type: CompType;
   x: number;
   z: number;
-  state: number; // For LED/Buzzer: 0 or 1. For Button/Switch: 0 or 1. For Pot/Servo: 0-255.
-  value?: string;
+  state: number; // User input: Button/Switch 0 or 1, Potentiometer 0-255.
+  value?: string; // Resistance/capacitance/inductance, or LED colour
+  damaged?: boolean; // burnt out by the circuit simulation
+  damageNote?: string;
 }
 
 export interface Wire {
@@ -78,57 +85,12 @@ function App() {
   const componentsRef = useRef<ExternalComponent[]>(components);
   useEffect(() => { componentsRef.current = components; }, [components]);
 
-  const resolveNet = (startCompId: string, startPinId: string, currentWires: Wire[], currentComps: ExternalComponent[]) => {
-    const visited = new Set<string>();
-    const stack = [{ compId: startCompId, pinId: startPinId }];
-    const result: { compId: string, pinId: string }[] = [];
-
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      const key = `${node.compId}:${node.pinId}`;
-      if (visited.has(key)) continue;
-      visited.add(key);
-      result.push(node);
-
-      // Follow wires
-      for (const w of currentWires) {
-        if (w.startCompId === node.compId && w.startPinId === node.pinId) {
-          stack.push({ compId: w.endCompId, pinId: w.endPinId });
-        }
-        if (w.endCompId === node.compId && w.endPinId === node.pinId) {
-          stack.push({ compId: w.startCompId, pinId: w.startPinId });
-        }
-      }
-
-      // Follow internal breadboard connections
-      if (node.compId !== 'BOARD') {
-        const comp = currentComps.find(c => c.id === node.compId);
-        if (comp && comp.type === 'Breadboard') {
-          const parts = node.pinId.split('_');
-          let connectedPins: string[] = [];
-          if (parts[0] === 'L' && parts[1] === 'neg') {
-            for(let i=0; i<25; i++) connectedPins.push(`L_neg_${i}`);
-          } else if (parts[0] === 'L' && parts[1] === 'pos') {
-            for(let i=0; i<25; i++) connectedPins.push(`L_pos_${i}`);
-          } else if (parts[0] === 'R' && parts[1] === 'pos') {
-            for(let i=0; i<25; i++) connectedPins.push(`R_pos_${i}`);
-          } else if (parts[0] === 'R' && parts[1] === 'neg') {
-            for(let i=0; i<25; i++) connectedPins.push(`R_neg_${i}`);
-          } else if (parts[0] === 'rowL') {
-            const r = parts[1];
-            for(let c=0; c<5; c++) connectedPins.push(`rowL_${r}_${c}`);
-          } else if (parts[0] === 'rowR') {
-            const r = parts[1];
-            for(let c=0; c<5; c++) connectedPins.push(`rowR_${r}_${c}`);
-          }
-          for (const p of connectedPins) {
-            stack.push({ compId: node.compId, pinId: p });
-          }
-        }
-      }
-    }
-    return result;
-  };
+  // Electrical simulation state (refs: read by the simulation loop and the IPC handler)
+  const [sim, setSim] = useState<SimOutput | null>(null);
+  const runningRef = useRef(false);
+  const pinDrivesRef = useRef(new Map<number, PinDrive>());
+  const lastSentRef = useRef(new Map<number, string>());
+  const [writeWithoutOutput, setWriteWithoutOutput] = useState<number[]>([]);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
@@ -139,9 +101,23 @@ function App() {
       });
 
       window.electronAPI.onIpcMessage((msg: any) => {
+        if (msg.action === 'pinMode' && msg.pin <= 21) {
+          const prev = pinDrivesRef.current.get(msg.pin);
+          pinDrivesRef.current.set(msg.pin, { mode: msg.mode, duty: prev?.duty ?? 0 });
+        }
+        if ((msg.action === 'digitalWrite' || msg.action === 'analogWrite') && msg.pin <= 21) {
+          // Header pins: hand the new level to the circuit simulation.
+          const prev = pinDrivesRef.current.get(msg.pin) ?? { mode: PIN_MODE.INPUT, duty: 0 };
+          if (msg.action === 'analogWrite') {
+            pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, msg.value / 255)) });
+          } else {
+            pinDrivesRef.current.set(msg.pin, { ...prev, duty: msg.value ? 1 : 0 });
+            if (prev.mode !== PIN_MODE.OUTPUT) setWriteWithoutOutput(w => (w.includes(msg.pin) ? w : [...w, msg.pin]));
+          }
+        }
         if (msg.action === 'digitalWrite' || msg.action === 'analogWrite') {
           const val = msg.action === 'digitalWrite' ? (msg.value ? 255 : 0) : msg.value;
-          
+
           if (msg.pin === 13) setLedState(msg.value);
           else if (msg.pin === 141) setRgb1(r => [val, r[1], r[2]]);
           else if (msg.pin === 142) setRgb1(r => [r[0], val, r[2]]);
@@ -155,16 +131,6 @@ function App() {
           else if (msg.pin === 213) setRgb4(r => [val, r[1], r[2]]);
           else if (msg.pin === 214) setRgb4(r => [r[0], val, r[2]]);
           else if (msg.pin === 215) setRgb4(r => [r[0], r[1], val]);
-          else {
-            const net = resolveNet('BOARD', msg.pin.toString(), wiresRef.current, componentsRef.current);
-            const affectedCompIds = new Set(net.filter(n => n.compId !== 'BOARD').map(n => n.compId));
-            
-            if (affectedCompIds.size > 0) {
-              setComponents(prev => prev.map(c => 
-                affectedCompIds.has(c.id) ? { ...c, state: ['Servo', 'Motor', 'OLED', 'Breadboard'].includes(c.type) ? msg.value : (msg.value > 0 ? 1 : 0) } : c
-              ));
-            }
-          }
         }
         else if (msg.action === 'matrix') {
           setMatrixFrame(msg.frame);
@@ -173,19 +139,87 @@ function App() {
     }
   }, []);
 
+  // Circuit simulation loop: solves the circuit ~50 times a second, burns overloaded parts,
+  // and feeds the resulting input-pin levels back to the running sketch.
+  useEffect(() => {
+    const simulator = new CircuitSimulator();
+    const labels = new Map(PINS.map(p => [p.id, p.label]));
+    const pinLabel = (id: string) => labels.get(id) ?? '';
+    let last = performance.now();
+    let lastPublish = 0;
+    let lastSignature = '';
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const elapsed = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+      last = now;
+      const out = simulator.step({
+        components: componentsRef.current,
+        wires: wiresRef.current,
+        pinLabel,
+        pins: pinDrivesRef.current,
+        running: runningRef.current,
+      }, elapsed);
+
+      if (out.burnt.length) {
+        setComponents(prev => prev.map(c => {
+          const b = out.burnt.find(x => x.id === c.id);
+          return b ? { ...c, damaged: true, damageNote: b.reason } : c;
+        }));
+      }
+
+      if (runningRef.current && window.electronAPI) {
+        const sent = lastSentRef.current;
+        for (const [pinStr, r] of Object.entries(out.pins)) {
+          const pin = Number(pinStr);
+          if ((pinDrivesRef.current.get(pin)?.mode ?? PIN_MODE.INPUT) === PIN_MODE.OUTPUT) continue;
+          const state = `${r.digital}:${r.analog}`;
+          if (sent.get(pin) !== state) {
+            sent.set(pin, state);
+            window.electronAPI.sendInput({ pin, val: r.digital, analog: r.analog });
+          }
+        }
+        for (const pin of [...sent.keys()]) {
+          if (!(pin in out.pins)) { // no longer wired
+            sent.delete(pin);
+            window.electronAPI.sendInput({ pin, val: 0, analog: 0 });
+          }
+        }
+      }
+
+      const signature = visualSignature(out);
+      if (signature !== lastSignature || now - lastPublish > 250) {
+        lastSignature = signature;
+        lastPublish = now;
+        setSim(out);
+      }
+    }, 20);
+    return () => clearInterval(timer);
+  }, []);
+
+  useBuzzerSound(sim, components);
+
   useEffect(() => {
     if (consoleEndRef.current) {
       consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [output]);
 
+  const resetPins = () => {
+    pinDrivesRef.current = new Map();
+    lastSentRef.current = new Map();
+    setWriteWithoutOutput([]);
+  };
+
   const handleRun = async () => {
     if (isRunning) return;
     setOutput('');
+    resetPins();
+    runningRef.current = true;
     setIsRunning(true);
     if (window.electronAPI) {
       const res = await window.electronAPI.compileAndRun(code);
       if (!res.success) {
+        runningRef.current = false;
         setIsRunning(false);
       }
     }
@@ -196,11 +230,12 @@ function App() {
     if (window.electronAPI) {
       await window.electronAPI.stopRun();
     }
+    runningRef.current = false;
+    resetPins();
     setIsRunning(false);
     setLedState(0);
     setMatrixFrame(Array(8).fill(Array(13).fill(0)));
     setRgb1([0,0,0]); setRgb2([0,0,0]); setRgb3([0,0,0]); setRgb4([0,0,0]);
-    setComponents(prev => prev.map(c => ({...c, state: 0})));
   };
 
   const handleSaveFile = () => {
@@ -267,10 +302,7 @@ function App() {
   };
 
   const addComponent = (type: CompType) => {
-    let defaultValue = '';
-    if (type === 'Resistor') defaultValue = '10kΩ';
-    else if (type === 'Capacitor') defaultValue = '100nF';
-    else if (type === 'Inductor') defaultValue = '10µH';
+    const defaultValue = DEFAULT_VALUES[type] ?? '';
 
     const newComp: ExternalComponent = {
       id: type + '_' + Date.now(),
@@ -293,26 +325,10 @@ function App() {
     }]);
   };
 
+  // Buttons, switches and potentiometers only change their own state: what the sketch reads
+  // follows from the circuit simulation.
   const onComponentInteract = (id: string, val: number) => {
-    const comp = components.find(c => c.id === id);
-    if (comp && ['Button', 'Switch', 'Potentiometer'].includes(comp.type)) {
-      setComponents(prev => prev.map(c => c.id === id ? { ...c, state: val } : c));
-      
-      const pinsToCheck = comp.type === 'Button' ? ['1', '2'] : ['1', '2', '3'];
-      const hitBoardPins = new Set<string>();
-      
-      for (const p of pinsToCheck) {
-         const net = resolveNet(id, p, wiresRef.current, componentsRef.current);
-         net.filter(n => n.compId === 'BOARD').forEach(n => hitBoardPins.add(n.pinId));
-      }
-
-      if (window.electronAPI) {
-        hitBoardPins.forEach(pinStr => {
-          const pinInt = parseInt(pinStr, 10);
-          window.electronAPI.sendInput({ pin: isNaN(pinInt) ? pinStr : pinInt, val });
-        });
-      }
-    }
+    setComponents(prev => prev.map(c => c.id === id && ['Button', 'Switch', 'Potentiometer'].includes(c.type) ? { ...c, state: val } : c));
   };
 
   const onComponentMove = (id: string, x: number, z: number) => {
@@ -342,6 +358,14 @@ function App() {
   const removeWireById = (wireId: string) => {
     setWires(prev => prev.filter(w => w.id !== wireId));
   };
+
+  const warnings: SimWarning[] = [
+    ...(sim?.warnings ?? []),
+    ...writeWithoutOutput.map(pin => ({
+      key: `nowrite:${pin}`, level: 'warn' as const,
+      text: `digitalWrite(${pin}, …) has no effect: ${gpioName(pin)} is not set as an output. Add pinMode(${pin}, OUTPUT) in setup().`,
+    })),
+  ];
 
   return (
     <div className="app-container">
@@ -436,45 +460,20 @@ function App() {
           {selectedCompId && (() => {
             const comp = components.find(c => c.id === selectedCompId);
             if (!comp) return null;
-            const isPassive = ['Resistor', 'Capacitor', 'Inductor'].includes(comp.type);
             return (
-              <div style={{
-                position: 'absolute', top: 10, right: 10, zIndex: 10, 
-                background: 'rgba(20,20,20,0.9)', border: '1px solid #444', 
-                borderRadius: '6px', padding: '15px', color: '#fff',
-                minWidth: '220px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-                backdropFilter: 'blur(10px)'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                  <h3 style={{ margin: 0, fontSize: '14px', color: '#60a5fa' }}>{comp.type} Properties</h3>
-                  <button onClick={() => setSelectedCompId(null)} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: '16px' }}>&times;</button>
-                </div>
-                <div style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>ID: {comp.id}</div>
-                {isPassive && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                    <label style={{ fontSize: '12px' }}>Parameter Value:</label>
-                    <input 
-                      type="text" 
-                      value={comp.value || ''} 
-                      onChange={(e) => {
-                        setComponents(prev => prev.map(c => c.id === comp.id ? { ...c, value: e.target.value } : c));
-                      }}
-                      style={{ 
-                        background: '#111', color: '#fff', border: '1px solid #555', 
-                        padding: '6px 8px', borderRadius: '4px', outline: 'none' 
-                      }}
-                    />
-                  </div>
-                )}
-                <button 
-                  style={{ width: '100%', padding: '10px', background: '#cc0000', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginTop: 'auto' }}
-                  onClick={() => requestRemoveComponent(selectedCompId)}
-                >
-                  Delete Component
-                </button>
-              </div>
+              <PropertiesPanel
+                comp={comp}
+                name={displayNames(components)[comp.id]}
+                result={sim?.comps[comp.id]}
+                onValue={value => setComponents(prev => prev.map(c => c.id === comp.id ? { ...c, value } : c))}
+                onReplace={() => setComponents(prev => prev.map(c => c.id === comp.id ? { ...c, damaged: false, damageNote: undefined } : c))}
+                onDelete={() => requestRemoveComponent(comp.id)}
+                onClose={() => setSelectedCompId(null)}
+              />
             );
           })()}
+
+          <WarningsPanel warnings={warnings} onSelect={setSelectedCompId} />
 
           {compToDelete && (
             <div style={{
@@ -511,6 +510,7 @@ function App() {
           )}
 
           <Board3D 
+            sim={sim}
             ledState={ledState} 
             matrixFrame={matrixFrame} 
             rgb1={rgb1} rgb2={rgb2} rgb3={rgb3} rgb4={rgb4}
