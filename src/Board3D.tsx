@@ -460,6 +460,7 @@ export default function Board3D(props: Board3DProps) {
       <ambientLight intensity={0.6} />
       <directionalLight position={[4, 10, 6]} intensity={2.2} />
       <directionalLight position={[-6, 4, -4]} intensity={0.6} />
+      <directionalLight position={[2, -10, 3]} intensity={1.4} />
       <pointLight position={[-10, -10, -10]} intensity={0.5} />
       <Environment resolution={256}>
         <Lightformer intensity={2} position={[0, 6, 0]} rotation-x={Math.PI / 2} scale={[10, 10, 1]} />
