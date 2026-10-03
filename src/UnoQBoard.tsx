@@ -550,7 +550,10 @@ function HeaderLabels() {
   );
 }
 
-export function UnoQBoard({ matrixFrame, rgb1, rgb2, rgb3, rgb4, onPinClick, onPinRightClick, selectedPin }: any) {
+export function UnoQBoard({ ledState, matrixFrame, rgb1, rgb2, rgb3, rgb4, onPinClick, onPinRightClick, selectedPin }: any) {
+  // On the UNO Q, LED_BUILTIN is the red channel of RGB LED 3 (LED3_R).
+  const builtinRed = ledState > 1 ? ledState : ledState > 0 ? 255 : 0;
+  const led3 = useMemo(() => [Math.max(rgb3[0], builtinRed), rgb3[1], rgb3[2]], [rgb3, builtinRed]);
   const [tex, bottomTex] = useLoader(THREE.TextureLoader, [topTextureUrl, bottomTextureUrl]);
   useMemo(() => {
     for (const t of [tex, bottomTex]) {
@@ -586,7 +589,7 @@ export function UnoQBoard({ matrixFrame, rgb1, rgb2, rgb3, rgb4, onPinClick, onP
       <LedMatrix frame={matrixFrame} />
       <RgbLed position={[1.555, 0, 3.08]} colorArr={rgb1} />
       <RgbLed position={[1.745, 0, 3.08]} colorArr={rgb2} />
-      <RgbLed position={[1.935, 0, 3.08]} colorArr={rgb3} />
+      <RgbLed position={[1.935, 0, 3.08]} colorArr={led3} />
       <RgbLed position={[2.125, 0, 3.08]} colorArr={rgb4} />
 
       <BottomSide tex={bottomTex} />
