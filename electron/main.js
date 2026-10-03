@@ -69,6 +69,9 @@ ipcMain.handle('compile-and-run', async (event, code) => {
       '-I', mockCoreDir, 
       '-o', exeFile,
       '-std=c++17',
+      // Static runtime: otherwise the exe loads whichever libstdc++ DLL comes first in PATH
+      // (e.g. Git's or an old MinGW's) and crashes before setup() runs.
+      '-static',
       '-lws2_32' // Windows sockets if needed for IPC
     ]);
 
@@ -91,13 +94,15 @@ ipcMain.handle('compile-and-run', async (event, code) => {
         env: { ...process.env, ARDUINO_VIRTUAL_IPC: '1' }
       });
 
+      let pendingLine = '';
       runnerProcess.stdout.on('data', (data) => {
         // The mock core might send IPC messages via stdout in a special format,
         // or we just route normal stdout to console.
-        const output = data.toString();
-        // Parse special IPC messages
-        const lines = output.split('\n');
-        for (const line of lines) {
+        // A chunk can end mid-line: keep the tail until the rest of the line arrives.
+        const lines = (pendingLine + data.toString()).split('\n');
+        pendingLine = lines.pop();
+        for (const rawLine of lines) {
+          const line = rawLine.replace(/\r$/, '');
           if (line.startsWith('IPC_MSG:')) {
             try {
               const msg = JSON.parse(line.substring(8));
