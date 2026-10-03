@@ -94,49 +94,53 @@ function App() {
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
+  // Electron preload or, in the browser, the dev-server bridge (src/webRunner.ts).
   useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.onConsoleOutput((newOutput: string) => {
-        setOutput(prev => prev + newOutput);
-      });
+    if (!window.electronAPI) return;
+    const unsubscribeConsole = window.electronAPI.onConsoleOutput((newOutput: string) => {
+      setOutput(prev => prev + newOutput);
+    });
 
-      window.electronAPI.onIpcMessage((msg: any) => {
-        if (msg.action === 'pinMode' && msg.pin <= 21) {
-          const prev = pinDrivesRef.current.get(msg.pin);
-          pinDrivesRef.current.set(msg.pin, { mode: msg.mode, duty: prev?.duty ?? 0 });
+    const unsubscribeIpc = window.electronAPI.onIpcMessage((msg: any) => {
+      if (msg.action === 'pinMode' && msg.pin <= 21) {
+        const prev = pinDrivesRef.current.get(msg.pin);
+        pinDrivesRef.current.set(msg.pin, { mode: msg.mode, duty: prev?.duty ?? 0 });
+      }
+      if ((msg.action === 'digitalWrite' || msg.action === 'analogWrite') && msg.pin <= 21) {
+        // Header pins: hand the new level to the circuit simulation.
+        const prev = pinDrivesRef.current.get(msg.pin) ?? { mode: PIN_MODE.INPUT, duty: 0 };
+        if (msg.action === 'analogWrite') {
+          pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, msg.value / 255)) });
+        } else {
+          pinDrivesRef.current.set(msg.pin, { ...prev, duty: msg.value ? 1 : 0 });
+          if (prev.mode !== PIN_MODE.OUTPUT) setWriteWithoutOutput(w => (w.includes(msg.pin) ? w : [...w, msg.pin]));
         }
-        if ((msg.action === 'digitalWrite' || msg.action === 'analogWrite') && msg.pin <= 21) {
-          // Header pins: hand the new level to the circuit simulation.
-          const prev = pinDrivesRef.current.get(msg.pin) ?? { mode: PIN_MODE.INPUT, duty: 0 };
-          if (msg.action === 'analogWrite') {
-            pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, msg.value / 255)) });
-          } else {
-            pinDrivesRef.current.set(msg.pin, { ...prev, duty: msg.value ? 1 : 0 });
-            if (prev.mode !== PIN_MODE.OUTPUT) setWriteWithoutOutput(w => (w.includes(msg.pin) ? w : [...w, msg.pin]));
-          }
-        }
-        if (msg.action === 'digitalWrite' || msg.action === 'analogWrite') {
-          const val = msg.action === 'digitalWrite' ? (msg.value ? 255 : 0) : msg.value;
+      }
+      if (msg.action === 'digitalWrite' || msg.action === 'analogWrite') {
+        const val = msg.action === 'digitalWrite' ? (msg.value ? 255 : 0) : msg.value;
 
-          if (msg.pin === 13) setLedState(msg.value);
-          else if (msg.pin === 141) setRgb1(r => [val, r[1], r[2]]);
-          else if (msg.pin === 142) setRgb1(r => [r[0], val, r[2]]);
-          else if (msg.pin === 160) setRgb1(r => [r[0], r[1], val]);
-          else if (msg.pin === 139) setRgb2(r => [val, r[1], r[2]]);
-          else if (msg.pin === 140) setRgb2(r => [r[0], val, r[2]]);
-          else if (msg.pin === 147) setRgb2(r => [r[0], r[1], val]);
-          else if (msg.pin === 210) setRgb3(r => [val, r[1], r[2]]);
-          else if (msg.pin === 211) setRgb3(r => [r[0], val, r[2]]);
-          else if (msg.pin === 212) setRgb3(r => [r[0], r[1], val]);
-          else if (msg.pin === 213) setRgb4(r => [val, r[1], r[2]]);
-          else if (msg.pin === 214) setRgb4(r => [r[0], val, r[2]]);
-          else if (msg.pin === 215) setRgb4(r => [r[0], r[1], val]);
-        }
-        else if (msg.action === 'matrix') {
-          setMatrixFrame(msg.frame);
-        }
-      });
-    }
+        if (msg.pin === 13) setLedState(msg.value);
+        else if (msg.pin === 141) setRgb1(r => [val, r[1], r[2]]);
+        else if (msg.pin === 142) setRgb1(r => [r[0], val, r[2]]);
+        else if (msg.pin === 160) setRgb1(r => [r[0], r[1], val]);
+        else if (msg.pin === 139) setRgb2(r => [val, r[1], r[2]]);
+        else if (msg.pin === 140) setRgb2(r => [r[0], val, r[2]]);
+        else if (msg.pin === 147) setRgb2(r => [r[0], r[1], val]);
+        else if (msg.pin === 210) setRgb3(r => [val, r[1], r[2]]);
+        else if (msg.pin === 211) setRgb3(r => [r[0], val, r[2]]);
+        else if (msg.pin === 212) setRgb3(r => [r[0], r[1], val]);
+        else if (msg.pin === 213) setRgb4(r => [val, r[1], r[2]]);
+        else if (msg.pin === 214) setRgb4(r => [r[0], val, r[2]]);
+        else if (msg.pin === 215) setRgb4(r => [r[0], r[1], val]);
+      }
+      else if (msg.action === 'matrix') {
+        setMatrixFrame(msg.frame);
+      }
+    });
+    return () => {
+      unsubscribeConsole?.();
+      unsubscribeIpc?.();
+    };
   }, []);
 
   // Circuit simulation loop: solves the circuit ~50 times a second, burns overloaded parts,
