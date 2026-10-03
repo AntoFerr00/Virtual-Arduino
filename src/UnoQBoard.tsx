@@ -4,6 +4,7 @@ import { Box, Cylinder, RoundedBox, Text, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { PCB_OUTLINE, PCB_HOLES } from './unoQOutline';
 import topTextureUrl from './assets/uno-q-top.jpg';
+import bottomTextureUrl from './assets/uno-q-bottom.jpg';
 import { configureTextBuilder } from 'troika-three-text';
 import silkscreenFontUrl from '@fontsource/roboto-mono/files/roboto-mono-latin-700-normal.woff';
 
@@ -19,6 +20,8 @@ export const SILK_FONT = silkscreenFontUrl;
 //   Z: -3.43 (USB-C edge, far from camera) .. +3.43 (JSPI/QWIIC edge)
 // Component positions come from the official STEP model and the official top-view
 // render (Documents/ABX00162-ABX00173-datasheet.pdf), which is also used as the PCB texture.
+// The bottom texture is the official back-view product photo (store.arduino.cc), mirrored so
+// both textures share the same UV mapping.
 // Converting from datasheet millimetres (landscape, USB-C on the left, origin bottom-left):
 //   X = (y_mm - 26.65) / 10,  Z = (x_mm - 34.8) / 10
 
@@ -31,14 +34,14 @@ const HEADER_H = 0.82; // female header height (8.5 mm)
 const FEMALE_PIN_Y = PCB_TOP + HEADER_H;
 const MALE_BASE_H = 0.25;
 const MALE_PIN_Y = PCB_TOP + 0.6;
-const BOTTOM_CONN_H = 0.15;
+const BOTTOM_CONN_H = 0.4; // JMISC/JMEDIA receptacles (STEP: 5 mm)
 const BOTTOM_PIN_Y = PCB_BOTTOM - BOTTOM_CONN_H - 0.01;
 
 const PCB_EDGE_COLOR = '#16405f';
 const GOLD = { color: '#d9b54a', metalness: 0.9, roughness: 0.3 };
 const SILVER = { color: '#c8ccd0', metalness: 1, roughness: 0.28 };
 
-// Texture coordinate of a point on the top face (the texture is the cropped official render).
+// Texture coordinate of a board point; identical for the top and the (mirrored) bottom texture.
 function texUV(x: number, z: number): [number, number] {
   return [(z * 10 + 34.3) / 68.6, (x * 10 + 26.65) / 53.3];
 }
@@ -69,8 +72,8 @@ const JSPI_X0 = -0.118;
 const JSPI_Z0 = 2.947;
 const QWIIC_X0 = -1.355;
 const QWIIC_Z = 3.17;
-const JMEDIA_Z = -2.26;
-const JMISC_Z = 2.43;
+const JMEDIA_Z = -2.205;
+const JMISC_Z = 2.467;
 const BOTTOM_X0 = 1.842;
 const BOTTOM_PITCH = 0.127;
 
@@ -169,23 +172,25 @@ function Glow({ position, size, color, opacity }: { position: [number, number, n
   );
 }
 
-// A raised block whose top face shows the matching region of the board render (chips, modules).
-function TexturedBlock({ tex, x0, x1, z0, z1, h, side = '#1d1d1f', metal = false }: { tex: THREE.Texture; x0: number; x1: number; z0: number; z1: number; h: number; side?: string; metal?: boolean }) {
+// A raised block whose outer face shows the matching region of the board texture (chips, modules).
+// With `bottom` it hangs under the PCB and uses its -Y face.
+function TexturedBlock({ tex, x0, x1, z0, z1, h, side = '#1d1d1f', metal = false, bottom = false }: { tex: THREE.Texture; x0: number; x1: number; z0: number; z1: number; h: number; side?: string; metal?: boolean; bottom?: boolean }) {
   const cx = (x0 + x1) / 2;
   const cz = (z0 + z1) / 2;
+  const face = bottom ? 3 : 2; // BoxGeometry face order: +x, -x, +y, -y, +z, -z
   const geo = useMemo(() => {
     const g = new THREE.BoxGeometry(x1 - x0, h, z1 - z0);
     const p = g.attributes.position;
     const uv = g.attributes.uv;
-    for (let i = 8; i < 12; i++) { // +Y face
+    for (let i = face * 4; i < face * 4 + 4; i++) {
       const [u, v] = texUV(cx + p.getX(i), cz + p.getZ(i));
       uv.setXY(i, u, v);
     }
     return g;
-  }, [x0, x1, z0, z1, h, cx, cz]);
+  }, [x0, x1, z0, z1, h, cx, cz, face]);
   return (
-    <mesh geometry={geo} position={[cx, PCB_TOP + h / 2, cz]}>
-      {[0, 1, 2, 3, 4, 5].map(i => i === 2
+    <mesh geometry={geo} position={[cx, bottom ? PCB_BOTTOM - h / 2 : PCB_TOP + h / 2, cz]}>
+      {[0, 1, 2, 3, 4, 5].map(i => i === face
         ? <meshStandardMaterial key={i} attach={`material-${i}`} map={tex} roughness={metal ? 0.35 : 0.6} metalness={metal ? 0.5 : 0.1} />
         : <meshStandardMaterial key={i} attach={`material-${i}`} color={side} roughness={metal ? 0.3 : 0.7} metalness={metal ? 0.9 : 0.1} />)}
     </mesh>
@@ -196,7 +201,7 @@ function TexturedBlock({ tex, x0, x1, z0, z1, h, side = '#1d1d1f', metal = false
 // Board parts
 // ---------------------------------------------------------------------------
 
-function PCB({ tex }: { tex: THREE.Texture }) {
+function PCB({ tex, bottomTex }: { tex: THREE.Texture; bottomTex: THREE.Texture }) {
   const { body, top } = useMemo(() => {
     const shape = new THREE.Shape(PCB_OUTLINE.map(([x, z]) => new THREE.Vector2(x, -z)));
     shape.holes = PCB_HOLES.map(h => new THREE.Path(h.map(([x, z]) => new THREE.Vector2(x, -z))));
@@ -218,6 +223,10 @@ function PCB({ tex }: { tex: THREE.Texture }) {
       </mesh>
       <mesh geometry={top} rotation={[-Math.PI / 2, 0, 0]} position={[0, PCB_TOP + 0.0005, 0]}>
         <meshStandardMaterial map={tex} roughness={0.5} metalness={0.05} />
+      </mesh>
+      {/* same UVs, seen from below */}
+      <mesh geometry={top} rotation={[-Math.PI / 2, 0, 0]} position={[0, PCB_BOTTOM - 0.0005, 0]}>
+        <meshStandardMaterial map={bottomTex} side={THREE.BackSide} roughness={0.5} metalness={0.05} />
       </mesh>
     </group>
   );
@@ -414,31 +423,70 @@ function LedMatrix({ frame }: { frame: number[][] }) {
   );
 }
 
-function BottomConnector({ zc, label }: { zc: number; label: string }) {
-  const len = 30 * BOTTOM_PITCH + 0.12;
+// 2x30 1.27 mm female receptacle on the bottom side, with its SMD leads soldered on both sides.
+function BottomConnector({ zc }: { zc: number }) {
+  const xc = BOTTOM_X0 - 29 * BOTTOM_PITCH / 2;
+  const len = 30 * BOTTOM_PITCH + 0.06;
+  const face = PCB_BOTTOM - BOTTOM_CONN_H;
   return (
     <group>
-      <Box args={[len, BOTTOM_CONN_H, 0.3]} position={[BOTTOM_X0 - 29 * BOTTOM_PITCH / 2, PCB_BOTTOM - BOTTOM_CONN_H / 2, zc]}>
-        <meshStandardMaterial color="#1b1b1b" roughness={0.7} />
+      <Box args={[len, BOTTOM_CONN_H, 0.32]} position={[xc, PCB_BOTTOM - BOTTOM_CONN_H / 2, zc]}>
+        <meshStandardMaterial color="#4a4948" roughness={0.75} />
       </Box>
-      <Text font={SILK_FONT} position={[BOTTOM_X0 - 29 * BOTTOM_PITCH / 2, PCB_BOTTOM - 0.001, zc + (zc > 0 ? -0.28 : 0.28)]} rotation={[Math.PI / 2, 0, 0]} fontSize={0.1} color="#e8eef5" anchorX="center" anchorY="middle">
-        {`${label} 1.8 V`}
-      </Text>
+      {Array.from({ length: 30 }).map((_, i) => {
+        const x = BOTTOM_X0 - i * BOTTOM_PITCH;
+        return (
+          <group key={i}>
+            {[1, -1].map(side => (
+              <group key={side}>
+                {/* socket opening */}
+                <Box args={[0.075, 0.004, 0.075]} position={[x, face - 0.002, zc + side * 0.067]}>
+                  <meshStandardMaterial color="#0a0a0a" roughness={1} />
+                </Box>
+                {/* contact visible inside the socket */}
+                <Box args={[0.02, 0.003, 0.05]} position={[x, face - 0.004, zc + side * 0.067]}>
+                  <meshStandardMaterial {...GOLD} />
+                </Box>
+                {/* SMD lead (odd pins on +Z, even pins on -Z) */}
+                <Box args={[0.05, 0.016, 0.15]} position={[x, PCB_BOTTOM - 0.008, zc + side * 0.235]}>
+                  <meshStandardMaterial {...GOLD} />
+                </Box>
+              </group>
+            ))}
+          </group>
+        );
+      })}
     </group>
   );
 }
 
-function BottomSide() {
+// Through-hole leads of the top headers, sticking out under the board with their solder joints.
+function ThroughHoleLeads() {
+  const leads = PINS.filter(p => p.pinType === 'female' || p.id.startsWith('SPI2_'));
   return (
     <group>
-      <BottomConnector zc={JMISC_Z} label="JMISC" />
-      <BottomConnector zc={JMEDIA_Z} label="JMEDIA" />
-      {/* eMMC and STM32U585 MCU */}
-      <Box args={[1.3, 0.1, 1.15]} position={[-0.065, PCB_BOTTOM - 0.05, 1.275]}><meshStandardMaterial color="#1c1c1e" roughness={0.6} /></Box>
-      <Text font={SILK_FONT} position={[-0.065, PCB_BOTTOM - 0.101, 1.275]} rotation={[Math.PI / 2, 0, 0]} fontSize={0.1} color="#9a9a9a">eMMC</Text>
-      <Box args={[0.7, 0.1, 0.7]} position={[-1.475, PCB_BOTTOM - 0.05, 0.97]}><meshStandardMaterial color="#1c1c1e" roughness={0.6} /></Box>
-      <Text font={SILK_FONT} position={[-1.475, PCB_BOTTOM - 0.101, 0.97]} rotation={[Math.PI / 2, 0, 0]} fontSize={0.07} color="#9a9a9a">STM32U585</Text>
-      <Text font={SILK_FONT} position={[0.2, PCB_BOTTOM - 0.001, -0.6]} rotation={[Math.PI / 2, 0, Math.PI / 2]} fontSize={0.22} color="#e8eef5">ARDUINO UNO Q</Text>
+      {leads.map(p => (
+        <group key={p.id} position={[p.pos[0], PCB_BOTTOM, p.pos[2]]}>
+          <Cylinder args={[0.085, 0.05, 0.035, 16]} position={[0, -0.0175, 0]}>
+            <meshStandardMaterial color="#d4d6d8" metalness={0.95} roughness={0.25} />
+          </Cylinder>
+          <Box args={[0.064, 0.14, 0.064]} position={[0, -0.07, 0]}>
+            <meshStandardMaterial color="#c9cbcd" metalness={1} roughness={0.3} />
+          </Box>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function BottomSide({ tex }: { tex: THREE.Texture }) {
+  return (
+    <group>
+      <BottomConnector zc={JMISC_Z} />
+      <BottomConnector zc={JMEDIA_Z} />
+      <ThroughHoleLeads />
+      <TexturedBlock tex={tex} bottom x0={-0.718} x1={0.571} z0={0.715} z1={1.85} h={0.1} />{/* eMMC */}
+      <TexturedBlock tex={tex} bottom x0={-1.834} x1={-1.128} z0={0.63} z1={1.315} h={0.08} />{/* STM32U585 */}
     </group>
   );
 }
@@ -450,7 +498,7 @@ function PinHitbox({ pin, selected, onClick, onRightClick }: { pin: BoardPin; se
     pin.pinType === 'female' ? [0.22, 0.06, 0.22] :
     pin.pinType === 'male' ? [0.12, 0.14, 0.12] :
     pin.pinType === 'smd' ? [0.08, 0.06, 0.12] :
-    [0.1, 0.05, 0.1];
+    [0.11, 0.05, 0.12];
   const active = hover || selected;
   return (
     <group position={pin.pos}>
@@ -503,15 +551,17 @@ function HeaderLabels() {
 }
 
 export function UnoQBoard({ matrixFrame, rgb1, rgb2, rgb3, rgb4, onPinClick, onPinRightClick, selectedPin }: any) {
-  const tex = useLoader(THREE.TextureLoader, topTextureUrl);
+  const [tex, bottomTex] = useLoader(THREE.TextureLoader, [topTextureUrl, bottomTextureUrl]);
   useMemo(() => {
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-  }, [tex]);
+    for (const t of [tex, bottomTex]) {
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = 8;
+    }
+  }, [tex, bottomTex]);
 
   return (
     <group>
-      <PCB tex={tex} />
+      <PCB tex={tex} bottomTex={bottomTex} />
 
       {/* Chips and modules (top faces textured from the render) */}
       <TexturedBlock tex={tex} x0={-2.075} x1={-0.475} z0={-2.88} z1={-1.68} h={0.2} side="#b9bec2" metal />{/* WCBN3536A Wi-Fi/BT module */}
@@ -539,7 +589,7 @@ export function UnoQBoard({ matrixFrame, rgb1, rgb2, rgb3, rgb4, onPinClick, onP
       <RgbLed position={[1.935, 0, 3.08]} colorArr={rgb3} />
       <RgbLed position={[2.125, 0, 3.08]} colorArr={rgb4} />
 
-      <BottomSide />
+      <BottomSide tex={bottomTex} />
       <HeaderLabels />
 
       {PINS.map(p => (
