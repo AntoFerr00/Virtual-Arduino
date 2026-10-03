@@ -1,10 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const fs = require('fs');
-const { spawn } = require('child_process');
+const { createRunner } = require('./runner');
 
 let mainWindow;
-let runnerProcess = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -33,110 +31,16 @@ app.on('window-all-closed', function () {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// IPC handers for compiling and running C++ code
-ipcMain.handle('compile-and-run', async (event, code) => {
-  if (runnerProcess) {
-    runnerProcess.kill();
-    runnerProcess = null;
-  }
-
-  const workspaceDir = path.join(__dirname, '..', 'workspace');
-  if (!fs.existsSync(workspaceDir)) {
-    fs.mkdirSync(workspaceDir);
-  }
-
-  const sourceFile = path.join(workspaceDir, 'main.cpp');
-  const exeFile = path.join(workspaceDir, 'main.exe');
-  
-  // We write the code appending the Arduino mock header include if not present
-  let finalCode = code;
-  if (!finalCode.includes('#include "Arduino.h"')) {
-    finalCode = '#include "Arduino.h"\n' + finalCode;
-  }
-  
-  fs.writeFileSync(sourceFile, finalCode, 'utf8');
-
-  return new Promise((resolve) => {
-    // We assume the mock Arduino core is in electron/mock-core
-    const mockCoreDir = path.join(__dirname, 'mock-core');
-    const mockCpp = path.join(mockCoreDir, 'Arduino.cpp');
-
-    mainWindow.webContents.send('console-output', '> Compiling...\n');
-
-    const compiler = spawn('g++', [
-      sourceFile, 
-      mockCpp, 
-      '-I', mockCoreDir, 
-      '-o', exeFile,
-      '-std=c++17',
-      // Static runtime: otherwise the exe loads whichever libstdc++ DLL comes first in PATH
-      // (e.g. Git's or an old MinGW's) and crashes before setup() runs.
-      '-static',
-      '-lws2_32' // Windows sockets if needed for IPC
-    ]);
-
-    let compileError = '';
-
-    compiler.stderr.on('data', (data) => {
-      compileError += data.toString();
-    });
-
-    compiler.on('close', (code) => {
-      if (code !== 0) {
-        mainWindow.webContents.send('console-output', `Compilation failed:\n${compileError}`);
-        resolve({ success: false, error: compileError });
-        return;
-      }
-
-      mainWindow.webContents.send('console-output', '> Compilation successful. Running...\n');
-      
-      runnerProcess = spawn(exeFile, [], {
-        env: { ...process.env, ARDUINO_VIRTUAL_IPC: '1' }
-      });
-
-      let pendingLine = '';
-      runnerProcess.stdout.on('data', (data) => {
-        // The mock core might send IPC messages via stdout in a special format,
-        // or we just route normal stdout to console.
-        // A chunk can end mid-line: keep the tail until the rest of the line arrives.
-        const lines = (pendingLine + data.toString()).split('\n');
-        pendingLine = lines.pop();
-        for (const rawLine of lines) {
-          const line = rawLine.replace(/\r$/, '');
-          if (line.startsWith('IPC_MSG:')) {
-            try {
-              const msg = JSON.parse(line.substring(8));
-              mainWindow.webContents.send('ipc-message', msg);
-            } catch(e) {}
-          } else if (line) {
-            mainWindow.webContents.send('console-output', line + '\n');
-          }
-        }
-      });
-
-      runnerProcess.stderr.on('data', (data) => {
-        mainWindow.webContents.send('console-output', '[ERROR] ' + data.toString() + '\n');
-      });
-
-      runnerProcess.on('close', (code) => {
-        mainWindow.webContents.send('console-output', `> Process exited with code ${code}\n`);
-      });
-
-      resolve({ success: true });
-    });
-  });
+// IPC handlers for compiling and running C++ code
+const runner = createRunner({
+  onConsole: (text) => mainWindow.webContents.send('console-output', text),
+  onIpc: (msg) => mainWindow.webContents.send('ipc-message', msg),
 });
+
+ipcMain.handle('compile-and-run', (event, code) => runner.compileAndRun(code));
 
 ipcMain.handle('stop-run', () => {
-  if (runnerProcess) {
-    runnerProcess.kill();
-    runnerProcess = null;
-    mainWindow.webContents.send('console-output', '> Process stopped by user.\n');
-  }
+  if (runner.stop()) mainWindow.webContents.send('console-output', '> Process stopped by user.\n');
 });
 
-ipcMain.on('send-input', (event, msg) => {
-  if (runnerProcess && runnerProcess.stdin) {
-    runnerProcess.stdin.write(JSON.stringify(msg) + '\n');
-  }
-});
+ipcMain.on('send-input', (event, msg) => runner.sendInput(msg));

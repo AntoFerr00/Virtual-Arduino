@@ -1,9 +1,16 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function subscribe(channel, callback) {
+  const listener = (_event, value) => callback(value);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   compileAndRun: (code) => ipcRenderer.invoke('compile-and-run', code),
   stopRun: () => ipcRenderer.invoke('stop-run'),
   sendInput: (msg) => ipcRenderer.send('send-input', msg),
-  onConsoleOutput: (callback) => ipcRenderer.on('console-output', (_event, value) => callback(value)),
-  onIpcMessage: (callback) => ipcRenderer.on('ipc-message', (_event, value) => callback(value))
+  // Both return an unsubscribe function
+  onConsoleOutput: (callback) => subscribe('console-output', callback),
+  onIpcMessage: (callback) => subscribe('ipc-message', callback)
 });
