@@ -145,12 +145,19 @@ function ExtButton({ comp, onClick, onRightClick, onInteract, onDragStart, onDra
       <Box args={[0.6, 0.2, 0.6]} position={[0, 0.1, 0]}>
         <meshStandardMaterial color="#333" />
       </Box>
-      <Cylinder args={[0.15, 0.15, 0.2]} position={[0, isPressed ? 0.15 : 0.25, 0]} 
-        onPointerDown={(e) => { e.stopPropagation(); onInteract(1); }}
-        onPointerUp={(e) => { e.stopPropagation(); onInteract(0); }}
-        onPointerOut={(e) => { e.stopPropagation(); onInteract(0); }}
-      >
+      <Cylinder args={[0.15, 0.15, 0.2]} position={[0, isPressed ? 0.15 : 0.25, 0]} raycast={() => null}>
         <meshStandardMaterial color="#ef4444" />
+      </Cylinder>
+      {/* Fixed, slightly larger hit area: the moving cap itself would slip out from under the
+          cursor when pressed. The press lasts until the mouse button is released anywhere. */}
+      <Cylinder args={[0.16, 0.16, 0.3]} position={[0, 0.25, 0]}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onInteract(1);
+          window.addEventListener('pointerup', () => onInteract(0), { once: true });
+        }}
+      >
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </Cylinder>
       <CompHitbox pos={getCompPinOffset('Button', '1')} onClick={() => onClick('1')} />
       <CompHitbox pos={getCompPinOffset('Button', '2')} onClick={() => onClick('2')} />
