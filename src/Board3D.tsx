@@ -7,6 +7,7 @@ import { ExternalComponent, Wire } from './App';
 import { UnoQBoard, PINS, SILK_FONT } from './UnoQBoard';
 import type { SimOutput, CompResult } from './circuit/simulator';
 import { parseValue } from './circuit/units';
+import { ESC, escOf, lipoOf } from './circuit/components';
 
 interface Board3DProps {
   sim?: SimOutput | null;
@@ -108,9 +109,17 @@ function getCompPinOffset(type: string, pinId?: string): [number, number, number
     case 'Servo': return pinId === 'GND' ? [-0.3, 0.1, 0.2] : pinId === 'VCC' ? [-0.3, 0.1, 0.3] : [-0.3, 0.1, 0.4];
     case 'Motor': return pinId === '1' ? [-0.4, 0.4, 0.2] : [-0.4, 0.4, -0.2];
     case 'OLED': return pinId === 'GND' ? [-0.3, 0.2, -0.7] : pinId === 'VCC' ? [-0.1, 0.2, -0.7] : pinId === 'SCL' ? [0.1, 0.2, -0.7] : [0.3, 0.2, -0.7];
-    default: return [0, 0.4, 0];
+    default: return DRONE_PINS[type]?.[pinId] ?? [0, 0.4, 0];
   }
 }
+
+// Terminals of the drone parts, in the part's own frame.
+const DRONE_PINS: Record<string, Record<string, [number, number, number]>> = {
+  LiPo: { '+': [-1.78, 0.3, -0.15], '-': [-1.78, 0.3, 0.15] },
+  ESC: { '+': [-0.88, 0.08, -0.15], '-': [-0.88, 0.08, 0.15], S: [-0.25, 0.08, 0.66], '5V': [0, 0.08, 0.66], GND: [0.25, 0.08, 0.66] },
+  IMU: { VCC: [-0.4, 0.15, 0.4], GND: [-0.2, 0.15, 0.4], SCL: [0, 0.15, 0.4], SDA: [0.2, 0.15, 0.4], INT: [0.4, 0.15, 0.4] },
+  ELRS: { GND: [-0.3, 0.12, 0.32], '5V': [-0.1, 0.12, 0.32], TX: [0.1, 0.12, 0.32], RX: [0.3, 0.12, 0.32] },
+};
 
 // Wisps of smoke rising from a part the simulation burnt out.
 function Smoke({ y = 0.6 }: { y?: number }) {
@@ -432,6 +441,163 @@ function ExtOLED({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDrag
   );
 }
 
+const flat: [number, number, number] = [-Math.PI / 2, 0, 0];
+
+function ExtLiPo({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+  const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
+  const { cells, vCell } = lipoOf(comp.value);
+  const hot = Math.min(1, Math.max(0, ((sim as CompResult | undefined)?.stress ?? 0) - 0.5));
+  const puff = comp.damaged ? 1.25 : 1; // a ruined LiPo swells
+  const top = 0.9 * puff + 0.01;
+  return (
+    <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
+      <group scale={[1, puff, 1]}>
+        <Box args={[2.4, 0.9, 1.1]} position={[0, 0.45, 0]}>
+          <meshStandardMaterial color={comp.damaged ? '#1a1a1a' : '#1f2937'} emissive="#ff3300" emissiveIntensity={comp.damaged ? 0 : hot * 0.8} />
+        </Box>
+        <Box args={[1.5, 0.91, 1.11]} position={[0.25, 0.45, 0]}><meshStandardMaterial color={comp.damaged ? '#2a1a1a' : '#b91c1c'} /></Box>
+      </group>
+      <SilkscreenText text={`${cells}S LiPo 1500mAh`} position={[0.25, top, -0.2]} rotation={flat} size={0.15} />
+      <SilkscreenText text={`${(cells * vCell).toFixed(2)} V  ·  ${vCell.toFixed(2)} V/cell`} position={[0.25, top, 0.18]} rotation={flat} size={0.11} />
+      {/* main leads and XT60 */}
+      <Cylinder args={[0.045, 0.045, 0.35]} position={[-1.37, 0.3, -0.15]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#dc2626" /></Cylinder>
+      <Cylinder args={[0.045, 0.045, 0.35]} position={[-1.37, 0.3, 0.15]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#111" /></Cylinder>
+      <Box args={[0.22, 0.2, 0.5]} position={[-1.62, 0.3, 0]}><meshStandardMaterial color="#facc15" /></Box>
+      <SilkscreenText text="+" position={[-1.62, 0.41, -0.15]} rotation={flat} size={0.14} color="#111" />
+      <SilkscreenText text="-" position={[-1.62, 0.41, 0.15]} rotation={flat} size={0.14} color="#111" />
+      {/* balance lead */}
+      <Cylinder args={[0.02, 0.02, 0.25]} position={[-1.32, 0.72, 0.35]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#e5e7eb" /></Cylinder>
+      <Box args={[0.1, 0.08, 0.3]} position={[-1.48, 0.72, 0.35]}><meshStandardMaterial color="#f5f5f5" /></Box>
+      {comp.damaged && <Smoke y={1.2} />}
+      <CompHitbox pos={getCompPinOffset('LiPo', '+')} onClick={() => onClick('+')} />
+      <CompHitbox pos={getCompPinOffset('LiPo', '-')} onClick={() => onClick('-')} />
+    </group>
+  );
+}
+
+function ExtESC({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+  const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
+  const r = sim as CompResult | undefined;
+  const { dir } = escOf(comp.value);
+  const prop = useRef<THREE.Group>(null);
+  const blur = useRef<THREE.MeshStandardMaterial>(null);
+  const spin = useRef(0);
+  const target = comp.damaged ? 0 : r?.speed ?? 0;
+  useFrame((_, delta) => {
+    spin.current += (target - spin.current) * Math.min(1, delta * 3); // the rotor spins up and down
+    if (prop.current) prop.current.rotation.y -= spin.current * delta * 40; // CW seen from above
+    if (blur.current) blur.current.opacity = Math.min(0.35, Math.abs(spin.current) * 0.7);
+  });
+  const powered = !!r?.powered && !comp.damaged;
+  const propColor = dir > 0 ? '#f97316' : '#22d3ee';
+  const pins = DRONE_PINS.ESC;
+  return (
+    <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
+      {/* ESC in heat-shrink, with its status LED */}
+      <Box args={[1.0, 0.16, 0.5]} position={[0, 0.1, 0]}><meshStandardMaterial color={comp.damaged ? '#1f1f1f' : '#1d4ed8'} roughness={0.6} /></Box>
+      <SilkscreenText text={`ESC ${ESC.iRated}A`} position={[-0.12, 0.185, 0]} rotation={flat} size={0.13} />
+      <Box args={[0.06, 0.03, 0.06]} position={[0.38, 0.19, -0.17]}>
+        <meshStandardMaterial color={powered ? '#22c55e' : '#14532d'} emissive={powered ? '#22c55e' : '#000'} emissiveIntensity={powered ? 1.5 : 0} />
+      </Box>
+      {/* battery leads */}
+      <Cylinder args={[0.035, 0.035, 0.4]} position={[-0.7, 0.08, -0.15]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#dc2626" /></Cylinder>
+      <Cylinder args={[0.035, 0.035, 0.4]} position={[-0.7, 0.08, 0.15]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#111" /></Cylinder>
+      <SilkscreenText text="+" position={[-0.88, 0.25, -0.15]} rotation={flat} size={0.14} />
+      <SilkscreenText text="-" position={[-0.88, 0.25, 0.15]} rotation={flat} size={0.14} />
+      {/* signal lead: S, BEC 5 V, GND */}
+      {([['S', '#f5f5f5'], ['5V', '#dc2626'], ['GND', '#3f2a1d']] as const).map(([id, color]) => (
+        <group key={id}>
+          <Cylinder args={[0.015, 0.015, 0.42]} position={[pins[id][0], 0.08, 0.45]} rotation={[Math.PI / 2, 0, 0]}><meshStandardMaterial color={color} /></Cylinder>
+          <SilkscreenText text={id} position={[pins[id][0], 0.01, 0.85]} rotation={flat} size={0.08} />
+        </group>
+      ))}
+      <Box args={[0.7, 0.09, 0.1]} position={[0, 0.08, 0.66]}><meshStandardMaterial color="#111" /></Box>
+      {/* motor phase wires */}
+      {[-0.08, 0, 0.08].map(z => (
+        <Cylinder key={z} args={[0.018, 0.018, 0.6]} position={[0.78, 0.08, z]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#111" /></Cylinder>
+      ))}
+      {/* brushless motor and propeller */}
+      <group position={[1.35, 0, 0]}>
+        <Cylinder args={[0.3, 0.32, 0.1]} position={[0, 0.05, 0]}><meshStandardMaterial color="#27272a" /></Cylinder>
+        <Cylinder args={[0.3, 0.3, 0.22]} position={[0, 0.21, 0]}><meshStandardMaterial color={comp.damaged ? '#2a2a2a' : '#a1a1aa'} metalness={0.8} roughness={0.3} /></Cylinder>
+        <group ref={prop} position={[0, 0.36, 0]}>
+          <Cylinder args={[0.08, 0.08, 0.1]}><meshStandardMaterial color={propColor} /></Cylinder>
+          <Box args={[0.85, 0.02, 0.14]} position={[0.47, 0, 0]} rotation={[dir * 0.3, 0, 0]}><meshStandardMaterial color={propColor} /></Box>
+          <Box args={[0.85, 0.02, 0.14]} position={[-0.47, 0, 0]} rotation={[-dir * 0.3, 0, 0]}><meshStandardMaterial color={propColor} /></Box>
+        </group>
+        <mesh position={[0, 0.36, 0]} rotation={flat} raycast={() => null}>
+          <circleGeometry args={[0.9, 40]} />
+          <meshStandardMaterial ref={blur} color={propColor} transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
+        </mesh>
+        <SilkscreenText text={dir > 0 ? 'CW' : 'CCW'} position={[0, 0.01, 0.45]} rotation={flat} size={0.1} />
+      </group>
+      {comp.damaged && <Smoke y={0.3} />}
+      {Object.keys(pins).map(id => <CompHitbox key={id} pos={pins[id]} onClick={() => onClick(id)} />)}
+    </group>
+  );
+}
+
+function ExtIMU({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+  const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
+  const powered = !!(sim as CompResult | undefined)?.powered && !comp.damaged;
+  const pins = DRONE_PINS.IMU;
+  return (
+    <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
+      <Box args={[1.0, 0.05, 0.6]} position={[0, 0.3, 0]}><meshStandardMaterial color={comp.damaged ? '#1f1f1f' : '#1d4ed8'} /></Box>
+      <Box args={[0.22, 0.05, 0.22]} position={[0.08, 0.345, -0.06]}><meshStandardMaterial color="#111" /></Box>
+      <Box args={[0.12, 0.04, 0.08]} position={[-0.32, 0.34, -0.16]}><meshStandardMaterial color="#111" /></Box>
+      <Box args={[0.06, 0.03, 0.04]} position={[0.38, 0.34, -0.2]}>
+        <meshStandardMaterial color={powered ? '#ff3b2a' : '#4a1410'} emissive={powered ? '#ff2a1a' : '#000'} emissiveIntensity={powered ? 1.5 : 0} />
+      </Box>
+      <SilkscreenText text="GY-521" position={[-0.28, 0.33, 0.02]} rotation={flat} size={0.08} />
+      <SilkscreenText text="MPU-6050" position={[0.08, 0.375, -0.06]} rotation={flat} size={0.035} color="#bbb" />
+      <Box args={[0.98, 0.08, 0.1]} position={[0, 0.27, 0.4]}><meshStandardMaterial color="#111" /></Box>
+      {Object.entries(pins).map(([id, pos]) => (
+        <group key={id}>
+          <Cylinder args={[0.02, 0.02, 0.3]} position={[pos[0], 0.15, pos[2]]}><meshStandardMaterial color="#d4af37" metalness={0.8} /></Cylinder>
+          <SilkscreenText text={id} position={[pos[0], 0.33, 0.22]} rotation={flat} size={0.055} />
+          <CompHitbox pos={pos} onClick={() => onClick(id)} />
+        </group>
+      ))}
+      {comp.damaged && <Smoke y={0.5} />}
+    </group>
+  );
+}
+
+function ExtELRS({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
+  const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
+  const powered = !!(sim as CompResult | undefined)?.powered && !comp.damaged;
+  const led = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame(({ clock }) => {
+    // Slow blink: powered, waiting for the transmitter.
+    const on = powered && Math.floor(clock.elapsedTime * 2) % 2 === 0;
+    if (led.current) {
+      led.current.emissiveIntensity = on ? 2 : 0;
+      led.current.color.set(on ? '#22c55e' : '#14532d');
+    }
+  });
+  const pins = DRONE_PINS.ELRS;
+  return (
+    <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
+      <Box args={[0.8, 0.05, 0.45]} position={[0, 0.25, 0]}><meshStandardMaterial color={comp.damaged ? '#1f1f1f' : '#111827'} /></Box>
+      <Box args={[0.2, 0.04, 0.2]} position={[-0.12, 0.29, -0.05]}><meshStandardMaterial color="#374151" metalness={0.6} /></Box>
+      <Box args={[0.06, 0.03, 0.05]} position={[0.3, 0.29, -0.15]}><meshStandardMaterial ref={led} color="#14532d" emissive="#22c55e" emissiveIntensity={0} /></Box>
+      <SilkscreenText text="ELRS 2.4G" position={[0.12, 0.28, 0.0]} rotation={flat} size={0.06} />
+      {/* T antenna */}
+      <Cylinder args={[0.012, 0.012, 0.5]} position={[0.25, 0.25, -0.47]} rotation={[Math.PI / 2, 0, 0]}><meshStandardMaterial color="#111" /></Cylinder>
+      <Cylinder args={[0.015, 0.015, 0.6]} position={[0.25, 0.25, -0.72]} rotation={[0, 0, Math.PI / 2]}><meshStandardMaterial color="#e5e7eb" /></Cylinder>
+      {Object.entries(pins).map(([id, pos]) => (
+        <group key={id}>
+          <Cylinder args={[0.02, 0.02, 0.25]} position={[pos[0], 0.125, pos[2]]}><meshStandardMaterial color="#d4af37" metalness={0.8} /></Cylinder>
+          <SilkscreenText text={id} position={[pos[0], 0.28, 0.15]} rotation={flat} size={0.055} />
+          <CompHitbox pos={pos} onClick={() => onClick(id)} />
+        </group>
+      ))}
+      {comp.damaged && <Smoke y={0.45} />}
+    </group>
+  );
+}
+
 function ExtBreadboard({ comp, onClick, onRightClick, onDragStart, onDrag, onDragEnd }: any) {
   const bind = useCompDrag(comp, onDragStart, onDragEnd, onDrag);
   return (
@@ -605,6 +771,10 @@ export default function Board3D(props: Board3DProps) {
           case 'Motor': return <ExtMotor {...commonProps} />;
           case 'OLED': return <ExtOLED {...commonProps} />;
           case 'Breadboard': return <ExtBreadboard {...commonProps} />;
+          case 'LiPo': return <ExtLiPo {...commonProps} />;
+          case 'ESC': return <ExtESC {...commonProps} />;
+          case 'IMU': return <ExtIMU {...commonProps} />;
+          case 'ELRS': return <ExtELRS {...commonProps} />;
           default: return null;
         }
         })();

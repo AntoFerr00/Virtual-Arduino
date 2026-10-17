@@ -38,7 +38,8 @@ void loop() {
 }
 `;
 
-export type CompType = 'LED' | 'Button' | 'Resistor' | 'Capacitor' | 'Inductor' | 'Diode' | 'Transistor' | 'Potentiometer' | 'Switch' | 'Buzzer' | 'Servo' | 'Motor' | 'OLED' | 'Breadboard';
+export type CompType = 'LED' | 'Button' | 'Resistor' | 'Capacitor' | 'Inductor' | 'Diode' | 'Transistor' | 'Potentiometer' | 'Switch' | 'Buzzer' | 'Servo' | 'Motor' | 'OLED' | 'Breadboard'
+  | 'LiPo' | 'ESC' | 'IMU' | 'ELRS';
 
 export interface ExternalComponent {
   id: string;
@@ -411,6 +412,12 @@ function App() {
               <option value="Inductor">Inductor</option>
               <option value="Diode">Diode</option>
               <option value="Transistor">Transistor</option>
+            </optgroup>
+            <optgroup label="Drone">
+              <option value="LiPo">LiPo Battery</option>
+              <option value="ESC">ESC + Brushless Motor</option>
+              <option value="IMU">IMU (MPU-6050 / GY-521)</option>
+              <option value="ELRS">ExpressLRS Receiver</option>
             </optgroup>
           </select>
         </div>

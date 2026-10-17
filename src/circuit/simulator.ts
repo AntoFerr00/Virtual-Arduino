@@ -13,6 +13,7 @@ import {
 import {
   VT, LED, LED_COLORS, ledColorOf, DIODE, BJT, RESISTOR_P_MAX, POT_P_MAX, BUTTON_R_ON, BUZZER,
   MOTOR, SERVO, OLED, INDUCTOR_DCR, ELECTROLYTIC_MIN_C, valueOr,
+  LIPO, lipoOf, ESC, escOf, IMU, ELRS,
 } from './components';
 import { formatSI } from './units';
 
@@ -260,6 +261,115 @@ class LoadDev extends Device {
   }
 }
 
+// Voltage source `v` behind `r` between two nodes (Norton equivalent), `pos` above `neg`.
+function stampFloatingSource(sys: NodalSystem, pos: number, neg: number, v: number, r: number) {
+  sys.addConductance(pos, neg, 1 / r);
+  sys.addCurrent(pos, v / r);
+  sys.addCurrent(neg, -v / r);
+}
+
+// LiPo pack: open-circuit voltage behind its internal resistance.
+class LipoDev extends Device {
+  constructor(comp: ExternalComponent, readonly p: number, readonly m: number, readonly emf: number, readonly r: number) { super(comp); }
+  stamp(sys: NodalSystem) { stampFloatingSource(sys, this.p, this.m, this.emf, this.r); return false; }
+  measure(V: Volt) {
+    const v = V(this.p) - V(this.m);
+    const i = (this.emf - v) / this.r; // discharge current
+    return { v, i, p: v * i };
+  }
+}
+
+function escThrottle(duty: number): number {
+  return duty < ESC.deadband ? 0 : Math.min(1, duty);
+}
+
+// ESC + brushless motor ('-' and the signal GND are the same copper, joined in the netlist).
+// Battery draw and BEC follow the state of the previous tick (powered, signal seen), so each
+// tick stays a linear solve. The BEC's own draw on the battery is left out (< 2 % of the motor's).
+class EscDev extends Device {
+  readonly powered: boolean;
+  private readonly signalSeen: boolean;
+  private throttle = 0;
+  signalPeak = 0; // highest S-to-GND level during this tick
+  constructor(
+    comp: ExternalComponent, readonly p: number, readonly m: number, readonly s: number, readonly bec: number,
+    readonly iFull: number, private store: Map<string, number>,
+  ) {
+    super(comp);
+    const vin = store.get(`${comp.id}:vin`) ?? 0;
+    this.powered = vin >= ESC.vMin && vin <= ESC.vAbsMax;
+    this.signalSeen = (store.get(`${comp.id}:sig`) ?? 0) >= ESC.vSignalHigh;
+  }
+  setDuty(duty: number) { this.throttle = this.powered && this.signalSeen ? escThrottle(duty) : 0; }
+  private get g() { return (ESC.iIdle + (this.powered ? this.iFull * Math.pow(this.throttle, 1.5) : 0)) / ESC.vNominal; }
+  stamp(sys: NodalSystem) {
+    sys.addConductance(this.p, this.m, this.g);
+    sys.addConductance(this.s, this.m, 1 / ESC.rSignal);
+    if (this.powered) stampFloatingSource(sys, this.bec, this.m, ESC.bec.v, ESC.bec.r);
+    return false;
+  }
+  measure(V: Volt) {
+    const v = V(this.p) - V(this.m);
+    this.signalPeak = Math.max(this.signalPeak, V(this.s) - V(this.m));
+    const ibec = this.powered ? (ESC.bec.v - (V(this.bec) - V(this.m))) / ESC.bec.r : 0;
+    return { v, i: v * this.g, p: v * v * this.g, ibec };
+  }
+  commit(V: Volt) {
+    this.store.set(`${this.comp.id}:vin`, V(this.p) - V(this.m));
+    this.store.set(`${this.comp.id}:sig`, this.signalPeak);
+  }
+}
+
+// GY-521 IMU module: supply load, I2C pull-ups to its LDO output, INT idling low.
+class ImuDev extends Device {
+  private readonly vReg: number;
+  constructor(
+    comp: ExternalComponent, readonly vcc: number, readonly gnd: number, readonly scl: number, readonly sda: number,
+    readonly int: number, private store: Map<string, number>,
+  ) {
+    super(comp);
+    this.vReg = Math.min(IMU.vReg, Math.max(0, (store.get(`${comp.id}:vcc`) ?? 0) - IMU.vDropout));
+  }
+  stamp(sys: NodalSystem) {
+    sys.addConductance(this.vcc, this.gnd, 1 / IMU.rLoad);
+    stampFloatingSource(sys, this.scl, this.gnd, this.vReg, IMU.rPullup);
+    stampFloatingSource(sys, this.sda, this.gnd, this.vReg, IMU.rPullup);
+    sys.addConductance(this.int, this.gnd, this.vReg > 2 ? 1 / IMU.rInt : 1e-6);
+    return false;
+  }
+  measure(V: Volt) {
+    const v = V(this.vcc) - V(this.gnd);
+    return { v, i: v / IMU.rLoad, p: (v * v) / IMU.rLoad };
+  }
+  commit(V: Volt) { this.store.set(`${this.comp.id}:vcc`, V(this.vcc) - V(this.gnd)); }
+}
+
+// ExpressLRS receiver: supply load, TX idling high once powered, high-impedance RX.
+class ElrsDev extends Device {
+  readonly powered: boolean;
+  rxPeak = 0; // highest RX-to-GND level during this tick
+  constructor(
+    comp: ExternalComponent, readonly vcc: number, readonly gnd: number, readonly tx: number, readonly rx: number,
+    private store: Map<string, number>,
+  ) {
+    super(comp);
+    const v = store.get(`${comp.id}:vcc`) ?? 0;
+    this.powered = v >= ELRS.vMin && v <= ELRS.vAbsMax;
+  }
+  stamp(sys: NodalSystem) {
+    sys.addConductance(this.vcc, this.gnd, 1 / ELRS.rLoad);
+    sys.addConductance(this.rx, this.gnd, 1 / ELRS.rRx);
+    if (this.powered) stampFloatingSource(sys, this.tx, this.gnd, ELRS.vTx, ELRS.rTx);
+    return false;
+  }
+  measure(V: Volt) {
+    const v = V(this.vcc) - V(this.gnd);
+    this.rxPeak = Math.max(this.rxPeak, V(this.rx) - V(this.gnd));
+    return { v, i: v / ELRS.rLoad, p: (v * v) / ELRS.rLoad };
+  }
+  commit(V: Volt) { this.store.set(`${this.comp.id}:vcc`, V(this.vcc) - V(this.gnd)); }
+}
+
 class SourceDev {
   constructor(readonly node: number, readonly kind: 'rail' | 'gpio', readonly name: string, readonly r: number, private vOf: (ctx: Ctx) => number) {}
   voltage(ctx: Ctx) { return this.vOf(ctx); }
@@ -318,6 +428,10 @@ const DAMAGE = {
   Capacitor: { tau: 0.3, instant: 3 },
   Servo: { tau: 0.05, instant: 1.0001 },
   OLED: { tau: 0.05, instant: 1.0001 },
+  LiPo: { tau: 2, instant: 4 },
+  ESC: { tau: 1, instant: 3 },
+  IMU: { tau: 0.05, instant: 1.0001 },
+  ELRS: { tau: 0.05, instant: 1.0001 },
 } as Record<string, { tau: number; instant: number }>;
 
 export class CircuitSimulator {
@@ -378,6 +492,14 @@ export class CircuitSimulator {
 
     // Component results
     for (const d of net.devices) out.comps[d.comp.id] = this.describe(d, measures.get(d)!, net, names, out.warnings);
+    // Paralleled BECs fight each other: only one ESC's red wire should power the board.
+    const becs = new Map<number, string[]>();
+    for (const d of net.devices) {
+      if (d instanceof EscDev && d.powered && d.bec >= 0) becs.set(d.bec, [...(becs.get(d.bec) ?? []), names[d.comp.id]]);
+    }
+    for (const list of becs.values()) {
+      if (list.length > 1) out.warnings.push({ key: `bec:${list.join(',')}`, level: 'warn', text: `The BECs of ${list.join(' and ')} are wired together: connect the 5 V (red) wire of only one ESC.` });
+    }
     for (const c of input.components) {
       if (c.damaged) {
         out.comps[c.id] = { v: 0, i: 0, p: 0, stress: 0 };
@@ -507,8 +629,10 @@ export class CircuitSimulator {
     const key = (compId: string, pinId: string) => (compId === 'BOARD' ? boardKey(pinId) : `${compId}:${pinId}`);
     for (const w of input.wires) uf.union(key(w.startCompId, w.startPinId), key(w.endCompId, w.endPinId));
     for (const c of input.components) {
-      if (c.type !== 'Breadboard') continue;
-      for (const g of BREADBOARD_GROUPS) for (let i = 1; i < g.length; i++) uf.union(`${c.id}:${g[0]}`, `${c.id}:${g[i]}`);
+      if (c.type === 'Breadboard') {
+        for (const g of BREADBOARD_GROUPS) for (let i = 1; i < g.length; i++) uf.union(`${c.id}:${g[0]}`, `${c.id}:${g[i]}`);
+      }
+      if (c.type === 'ESC') uf.union(`${c.id}:-`, `${c.id}:GND`); // signal GND = battery negative
     }
 
     const gndRoot = uf.find('GND');
@@ -572,6 +696,20 @@ export class CircuitSimulator {
         case 'OLED':
           devices.push(new LoadDev(c, p('VCC'), p('GND'), OLED.rLoad, [[p('SCL'), p('VCC'), OLED.rPullup], [p('SDA'), p('VCC'), OLED.rPullup]]));
           break;
+        case 'LiPo': {
+          const { cells, vCell } = lipoOf(c.value);
+          devices.push(new LipoDev(c, p('+'), p('-'), cells * vCell, cells * LIPO.rCell));
+          break;
+        }
+        case 'ESC':
+          devices.push(new EscDev(c, p('+'), p('-'), p('S'), p('5V'), escOf(c.value).iFull, this.store));
+          break;
+        case 'IMU':
+          devices.push(new ImuDev(c, p('VCC'), p('GND'), p('SCL'), p('SDA'), p('INT'), this.store));
+          break;
+        case 'ELRS':
+          devices.push(new ElrsDev(c, p('5V'), p('GND'), p('TX'), p('RX'), this.store));
+          break;
       }
     }
 
@@ -609,6 +747,9 @@ export class CircuitSimulator {
         sources.push(dev);
         gpio.push({ pin, node: nodeIdx, mode, duty: mode === PIN_MODE.OUTPUT ? duty : 1, dev });
       }
+    }
+    for (const d of devices) {
+      if (d instanceof EscDev) d.setDuty(gpio.find(g => g.node === d.s && g.mode === PIN_MODE.OUTPUT)?.duty ?? 0);
     }
 
     const signature = input.wires.map(w => `${w.startCompId}:${w.startPinId}-${w.endCompId}:${w.endPinId}`).sort().join('|')
@@ -667,6 +808,58 @@ export class CircuitSimulator {
       case 'OLED':
         r.powered = m.v >= OLED.vMin && m.v <= OLED.vMax;
         break;
+      case 'LiPo': {
+        const { cells, vCell } = lipoOf(c.value);
+        r.extra = { vcell: m.v / cells };
+        if (ratio > 1) warnings.push({ key: `lipo-i:${c.id}`, level: 'error', compId: c.id, text: `${name} delivers ${formatSI(m.i, 'A')}, over its ${formatSI(LIPO.iMax, 'A')} rating: it is overheating. A shorted LiPo can catch fire.` });
+        if (vCell < LIPO.vCellEmpty) {
+          warnings.push({ key: `lipo-low:${c.id}`, level: 'warn', compId: c.id, text: `${name} is over-discharged (${formatSI(vCell, 'V')} per cell): below ${LIPO.vCellEmpty} V a LiPo cell is damaged. Recharge it.` });
+        } else if (vCell > LIPO.vCellHv + 0.005) {
+          warnings.push({ key: `lipo-high:${c.id}`, level: 'warn', compId: c.id, text: `${name} is overcharged (${formatSI(vCell, 'V')} per cell): a LiPo cell stops at ${LIPO.vCellFull} V (${LIPO.vCellHv} V for LiHV).` });
+        }
+        break;
+      }
+      case 'ESC': {
+        const esc = d as EscDev;
+        const powered = m.v >= ESC.vMin && m.v <= ESC.vAbsMax;
+        const driver = net.gpio.find(g => g.node === esc.s && g.mode === PIN_MODE.OUTPUT);
+        const duty = driver?.duty ?? 0;
+        const seen = esc.signalPeak >= ESC.vSignalHigh;
+        const throttle = powered && seen ? escThrottle(duty) : 0;
+        r.powered = powered;
+        r.speed = escOf(c.value).dir * throttle;
+        r.extra = { throttle, ibec: m.ibec };
+        if (!powered && m.v > -0.5 && m.v < ESC.vMin && (driver || m.v > 0.5)) {
+          warnings.push({ key: `esc-pwr:${c.id}`, level: 'warn', compId: c.id, text: `${name} has no battery power (${formatSI(m.v, 'V')} on + and -): it needs a 2S–6S LiPo (${ESC.vMin}–${ESC.vMax} V).` });
+        }
+        if (powered && duty >= ESC.deadband && !seen) {
+          warnings.push({ key: `esc-gnd:${c.id}`, level: 'warn', compId: c.id, text: `${name} does not see the throttle signal: wire its GND to the board GND (the signal needs a common ground).` });
+        }
+        if (esc.signalPeak > ESC.vSignalMax + 0.05) {
+          warnings.push({ key: `esc-sig:${c.id}`, level: 'error', compId: c.id, text: `${name}: the signal input sees ${formatSI(esc.signalPeak, 'V')}, over the ${ESC.vSignalMax} V it accepts. Drive S from a board pin.` });
+        }
+        if (m.ibec > ESC.bec.iMax) {
+          warnings.push({ key: `esc-bec:${c.id}`, level: 'error', compId: c.id, text: `${name}: its BEC delivers ${formatSI(m.ibec, 'A')}, over its ${formatSI(ESC.bec.iMax, 'A')} rating. Check the 5V wire for a short.` });
+        }
+        if (m.i > ESC.iRated) {
+          warnings.push({ key: `esc-i:${c.id}`, level: 'error', compId: c.id, text: `${name} draws ${formatSI(m.i, 'A')}, over its ${formatSI(ESC.iRated, 'A')} rating: it is overheating. Use a smaller motor/prop.` });
+        }
+        break;
+      }
+      case 'IMU':
+        r.powered = m.v >= IMU.vMin && m.v <= IMU.vMax;
+        if (!r.powered && m.v > 0.5 && m.v < IMU.vMin) warnings.push({ key: `imu:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${IMU.vMin}–${IMU.vMax} V on VCC (has ${formatSI(m.v, 'V')}). Use the 3V3 or 5V pin.` });
+        break;
+      case 'ELRS': {
+        const rx = d as ElrsDev;
+        r.powered = m.v >= ELRS.vMin && m.v <= ELRS.vMax;
+        if (!r.powered && m.v > 0.5 && m.v < ELRS.vMin) warnings.push({ key: `elrs:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${ELRS.vMin}–${ELRS.vMax} V on 5V (has ${formatSI(m.v, 'V')}). Use the board's 5V pin or a BEC.` });
+        if (rx.rxPeak > ELRS.vRxMax) warnings.push({ key: `elrs-rx:${c.id}`, level: 'error', compId: c.id, text: `${name}: its RX pin sees ${formatSI(rx.rxPeak, 'V')}, but the receiver runs at 3.3 V and is not 5 V tolerant.` });
+        if ((rx.tx >= 0 && net.gpioNodes.get(1) === rx.tx) || (rx.rx >= 0 && net.gpioNodes.get(0) === rx.rx)) {
+          warnings.push({ key: `elrs-swap:${c.id}`, level: 'warn', compId: c.id, text: `${name}: TX and RX are swapped. The receiver's TX goes to D0 (RX), its RX to D1 (TX).` });
+        }
+        break;
+      }
     }
     return r;
   }
@@ -707,6 +900,16 @@ function stressOf(c: ExternalComponent, m: Measure): { ratio: number; reason: st
       return { ratio: m.v / SERVO.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
     case 'OLED':
       return { ratio: m.v / OLED.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
+    case 'LiPo':
+      return { ratio: Math.abs(m.i) / LIPO.iMax, reason: `${formatSI(Math.abs(m.i), 'A')} short-circuit current` };
+    case 'ESC':
+      if (m.v < -0.5) return { ratio: 99, reason: `battery connected backwards (${formatSI(m.v, 'V')})` };
+      if (m.v > ESC.vAbsMax) return { ratio: 99, reason: `${formatSI(m.v, 'V')} battery, over 6S` };
+      return { ratio: Math.max(m.v / ESC.vAbsMax, m.i / ESC.iRated), reason: `${formatSI(m.i, 'A')} motor current` };
+    case 'IMU':
+      return { ratio: m.v / IMU.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
+    case 'ELRS':
+      return { ratio: m.v / ELRS.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
     default:
       return { ratio: 0, reason: '' };
   }
