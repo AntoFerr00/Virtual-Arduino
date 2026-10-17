@@ -225,6 +225,10 @@ function App() {
       if (!res.success) {
         runningRef.current = false;
         setIsRunning(false);
+      } else {
+        // Inputs sent while g++ was compiling were dropped (no process yet): forget them so the
+        // next simulation tick re-sends every input pin, including ones that never change.
+        lastSentRef.current = new Map();
       }
     }
   };
