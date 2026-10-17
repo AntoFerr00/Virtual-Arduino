@@ -18,7 +18,7 @@ const EXTRA_ROWS: Record<string, [label: string, format: (v: number) => string]>
   ib: ['Base current', v => formatSI(v, 'A')],
   vcell: ['Per cell', v => formatSI(v, 'V')],
   throttle: ['Throttle', v => `${Math.round(v * 100)}%`],
-  ibec: ['BEC current', v => formatSI(v, 'A')],
+  ibec: ['BEC current', v => formatSI(Math.abs(v) < 1e-6 ? 0 : v, 'A')], // hide solver noise on an unloaded BEC
 };
 
 const RATINGS: Partial<Record<string, string>> = {
