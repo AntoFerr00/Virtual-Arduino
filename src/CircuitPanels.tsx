@@ -33,7 +33,7 @@ const RATINGS: Partial<Record<string, string>> = {
   Buzzer: 'Active buzzer — polarised, 3–5 V',
   LiPo: `1500 mAh 75C — ${LIPO.rCell * 1000} mΩ per cell, ${formatSI(LIPO.iMax, 'A')} continuous, ${LIPO.vCellEmpty}–${LIPO.vCellFull} V per cell`,
   ESC: `${ESC.iRated} A ESC — 2S–6S (${ESC.vMin}–${ESC.vMax} V), signal ≤ ${ESC.vSignalMax} V (throttle = PWM duty), BEC ${ESC.bec.v} V ${ESC.bec.iMax} A`,
-  IMU: `GY-521 — ${IMU.vMin}–${IMU.vMax} V supply, ${formatSI(IMU.rPullup, 'Ω')} I2C pull-ups to its 3.3 V regulator (no I2C data in the simulator)`,
+  IMU: `GY-521 — ${IMU.vMin}–${IMU.vMax} V supply, ${formatSI(IMU.rPullup, 'Ω')} I2C pull-ups to its 3.3 V regulator; answers at 0x68 on A4 (SDA) / A5 (SCL) as a level, motionless sensor`,
   ELRS: `ExpressLRS receiver — ${ELRS.vMin}–${ELRS.vMax} V supply, 3.3 V UART (RX not 5 V tolerant)`,
 };
 

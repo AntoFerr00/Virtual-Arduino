@@ -91,6 +91,8 @@ function App() {
   const runningRef = useRef(false);
   const pinDrivesRef = useRef(new Map<number, PinDrive>());
   const lastSentRef = useRef(new Map<number, string>());
+  const lastBusRef = useRef(''); // I2C addresses last sent to the sketch
+  const readySentRef = useRef(false); // the sketch's setup() waits for the first full state
   const [writeWithoutOutput, setWriteWithoutOutput] = useState<number[]>([]);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
@@ -189,6 +191,17 @@ function App() {
             window.electronAPI.sendInput({ pin, val: 0, analog: 0 });
           }
         }
+        // I2C devices that are powered and wired to A4/A5 answer on the bus.
+        const bus = [...new Set(Object.values(out.comps).flatMap(r => r.i2c ?? []))].sort((a, b) => a - b);
+        const busState = bus.join(',');
+        if (lastBusRef.current !== busState) {
+          lastBusRef.current = busState;
+          window.electronAPI.sendInput({ i2c: bus });
+        }
+        if (!readySentRef.current) {
+          readySentRef.current = true;
+          window.electronAPI.sendInput({ ready: 1 });
+        }
       }
 
       const signature = visualSignature(out);
@@ -212,6 +225,8 @@ function App() {
   const resetPins = () => {
     pinDrivesRef.current = new Map();
     lastSentRef.current = new Map();
+    lastBusRef.current = '';
+    readySentRef.current = false;
     setWriteWithoutOutput([]);
   };
 
@@ -230,6 +245,8 @@ function App() {
         // Inputs sent while g++ was compiling were dropped (no process yet): forget them so the
         // next simulation tick re-sends every input pin, including ones that never change.
         lastSentRef.current = new Map();
+        lastBusRef.current = '';
+        readySentRef.current = false;
       }
     }
   };

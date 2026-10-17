@@ -16,7 +16,7 @@ A powerful, interactive 3D Arduino simulator built with React Three Fiber and El
   - **Inputs**: Pushbuttons, Slide Switches, Potentiometers.
   - **Outputs**: LEDs, Buzzers, DC Motors, Servo Motors, OLED Displays.
   - **Passives**: Resistors, Capacitors, Inductors, Transistors, Diodes.
-  - **Drone**: LiPo battery (cell count and charge, e.g. `4S 3.9V`), ESC with brushless motor and propeller (throttle from the signal's PWM duty, 5 V BEC), MPU-6050 / GY-521 IMU and ExpressLRS receiver (electrical only: no I2C or UART data).
+  - **Drone**: LiPo battery (cell count and charge, e.g. `4S 3.9V`), ESC with brushless motor and propeller (throttle from the signal's PWM duty, 5 V BEC), MPU-6050 / GY-521 IMU (answers at 0x68 through `Wire` when powered and wired to A4 SDA / A5 SCL, as a level, motionless sensor) and ExpressLRS receiver (electrical only: no UART data).
   - **Boards**: Arduino Uno and standard Half-size Breadboards (400 tie-points).
 - **Integrated Code Editor**: Built-in Monaco editor (the engine behind VS Code) for writing standard Arduino C++ code.
 - **Real-time Compilation & Simulation**: Your sketch is compiled with g++ against a mock Arduino core and runs as a native process, exchanging pin states with the circuit simulation. This works both in the desktop app and in the browser. Click a virtual button, and your C++ `digitalRead` catches it instantly!

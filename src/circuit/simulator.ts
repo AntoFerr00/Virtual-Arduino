@@ -33,6 +33,7 @@ export interface CompResult {
   powered?: boolean;
   sounding?: boolean;
   angle?: number; // servo, 0..255
+  i2c?: number[]; // addresses the part answers on the board's I2C bus (A4 SDA, A5 SCL)
   extra?: Record<string, number>;
 }
 
@@ -846,10 +847,18 @@ export class CircuitSimulator {
         }
         break;
       }
-      case 'IMU':
+      case 'IMU': {
+        const imu = d as ImuDev;
         r.powered = m.v >= IMU.vMin && m.v <= IMU.vMax;
         if (!r.powered && m.v > 0.5 && m.v < IMU.vMin) warnings.push({ key: `imu:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${IMU.vMin}–${IMU.vMax} V on VCC (has ${formatSI(m.v, 'V')}). Use the 3V3 or 5V pin.` });
+        const sda = net.gpioNodes.get(18), scl = net.gpioNodes.get(19); // A4, A5
+        const onBus = imu.sda >= 0 && imu.scl >= 0 && imu.sda !== imu.scl && imu.sda === sda && imu.scl === scl;
+        if (r.powered && onBus) r.i2c = [IMU.address];
+        if (imu.sda >= 0 && imu.scl >= 0 && imu.sda === scl && imu.scl === sda) {
+          warnings.push({ key: `imu-swap:${c.id}`, level: 'warn', compId: c.id, text: `${name}: SDA and SCL are swapped. SDA goes to A4, SCL to A5.` });
+        }
         break;
+      }
       case 'ELRS': {
         const rx = d as ElrsDev;
         r.powered = m.v >= ELRS.vMin && m.v <= ELRS.vMax;

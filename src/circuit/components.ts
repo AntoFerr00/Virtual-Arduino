@@ -73,7 +73,7 @@ export function escOf(value?: string): { dir: 1 | -1; iFull: number } {
 
 // GY-521 module: MPU-6050 behind a 3.3 V LDO, with its I2C pull-ups to the LDO output (so a 5 V
 // supply never reaches SDA/SCL). INT is a push-pull output that idles low.
-export const IMU = { rLoad: 680, rPullup: 4.7e3, vReg: 3.3, vDropout: 0.25, rInt: 1e3, vMin: 3.0, vMax: 5.5, vAbsMax: 6.0 };
+export const IMU = { address: 0x68, rLoad: 680, rPullup: 4.7e3, vReg: 3.3, vDropout: 0.25, rInt: 1e3, vMin: 3.0, vMax: 5.5, vAbsMax: 6.0 };
 
 // ExpressLRS receiver (ESP8285 + SX1280 behind a 3.3 V LDO): ≈ 60 mA, 3.3 V UART that idles high.
 export const ELRS = { rLoad: 82, vMin: 4.0, vMax: 5.5, vAbsMax: 6.5, vTx: 3.3, rTx: 100, rRx: 1e6, vRxMax: 3.6 };
