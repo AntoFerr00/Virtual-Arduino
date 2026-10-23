@@ -7,7 +7,7 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  compileAndRun: (code) => ipcRenderer.invoke('compile-and-run', code),
+  compileAndRun: (code, board) => ipcRenderer.invoke('compile-and-run', code, board),
   stopRun: () => ipcRenderer.invoke('stop-run'),
   sendInput: (msg) => ipcRenderer.send('send-input', msg),
   // Both return an unsubscribe function

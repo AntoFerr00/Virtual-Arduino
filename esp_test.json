@@ -1,0 +1,19 @@
+{
+  "board": "nanoesp32",
+  "components": [
+    { "id": "Button_esp1", "type": "Button", "x": 1.75, "z": 1.0, "state": 0, "value": "" },
+    { "id": "Resistor_esp1", "type": "Resistor", "x": 1.8, "z": -0.65, "state": 0, "value": "220Ω" },
+    { "id": "LED_esp1", "type": "LED", "x": 2.75, "z": -0.65, "state": 0, "value": "red" },
+    { "id": "Potentiometer_esp1", "type": "Potentiometer", "x": -1.9, "z": -0.9, "state": 128, "value": "10kΩ" }
+  ],
+  "wires": [
+    { "id": "w_esp1", "startCompId": "BOARD", "startPinId": "4", "endCompId": "Button_esp1", "endPinId": "1", "color": "#facc15" },
+    { "id": "w_esp2", "startCompId": "Button_esp1", "startPinId": "2", "endCompId": "BOARD", "endPinId": "GND_1", "color": "#1f1f1f" },
+    { "id": "w_esp3", "startCompId": "BOARD", "startPinId": "5", "endCompId": "Resistor_esp1", "endPinId": "1", "color": "#16a34a" },
+    { "id": "w_esp4", "startCompId": "Resistor_esp1", "startPinId": "2", "endCompId": "LED_esp1", "endPinId": "A", "color": "#16a34a" },
+    { "id": "w_esp5", "startCompId": "LED_esp1", "startPinId": "C", "endCompId": "BOARD", "endPinId": "GND_1", "color": "#1f1f1f" },
+    { "id": "w_esp6", "startCompId": "BOARD", "startPinId": "3V3", "endCompId": "Potentiometer_esp1", "endPinId": "1", "color": "#f97316" },
+    { "id": "w_esp7", "startCompId": "Potentiometer_esp1", "startPinId": "3", "endCompId": "BOARD", "endPinId": "GND_2", "color": "#1f1f1f" },
+    { "id": "w_esp8", "startCompId": "Potentiometer_esp1", "startPinId": "2", "endCompId": "BOARD", "endPinId": "17", "color": "#2563eb" }
+  ]
+}

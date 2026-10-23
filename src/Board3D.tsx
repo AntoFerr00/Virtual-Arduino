@@ -1,14 +1,16 @@
-import { useRef, useMemo, useState, Suspense } from 'react';
+import { useRef, useMemo, useState, useEffect, Suspense } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Box, Cylinder, QuadraticBezierLine, Text, Environment, Lightformer } from '@react-three/drei';
 import * as THREE from 'three';
 import { useDrag } from '@use-gesture/react';
 import { ExternalComponent, Wire } from './App';
-import { UnoQBoard, PINS, SILK_FONT } from './UnoQBoard';
+import { SILK_FONT } from './UnoQBoard';
+import type { BoardDef } from './boards';
 import type { SimOutput, CompResult } from './circuit/simulator';
 import { parseValue } from './circuit/units';
 
 interface Board3DProps {
+  board: BoardDef;
   sim?: SimOutput | null;
   ledState: number;
   matrixFrame: number[][];
@@ -24,6 +26,9 @@ interface Board3DProps {
   onComponentRemove: (id: string) => void;
   onWireRemove: (compId: string, pinId: string) => void;
   onWireRemoveById?: (wireId: string) => void;
+  selectedWireId?: string | null;
+  wireColor: (w: Wire) => string;
+  onWireSelect?: (wireId: string | null) => void;
   onComponentSelect?: (id: string | null) => void;
   selectedCompId?: string | null;
 }
@@ -460,59 +465,86 @@ function SilkscreenText({ text, position, rotation = [0,0,0], size = 0.08, color
   );
 }
 
-function DynamicWire({ selectedNode, components }: { selectedNode: {compId:string, pinId:string}, components: ExternalComponent[] }) {
-  const { camera, pointer, raycaster } = useThree();
-  const [endPos, setEndPos] = useState<[number, number, number]>([0, 0, 0]);
+type Vec3 = [number, number, number];
 
-  let startPos = [0,0,0];
-  if (selectedNode.compId === 'BOARD') {
-     startPos = PINS.find(p => p.id === selectedNode.pinId)?.pos || [0,0,0];
-  } else {
-     const comp = components.find(c => c.id === selectedNode.compId);
-     if (comp) {
-       const offset = getCompPinOffset(comp.type, selectedNode.pinId);
-       startPos = [comp.x + offset[0], offset[1], comp.z + offset[2]];
-     }
-  }
+// Arc of a jumper wire between two pins: it rises a little more for longer runs.
+function wireMid(a: Vec3, b: Vec3): Vec3 {
+  const dist = Math.hypot(a[0] - b[0], a[2] - b[2]);
+  return [(a[0] + b[0]) / 2, Math.max(a[1], b[1]) + 0.35 + dist * 0.18, (a[2] + b[2]) / 2];
+}
+
+function DynamicWire({ startPos, color }: { startPos: Vec3; color: string }) {
+  const { camera, pointer, raycaster } = useThree();
+  const [endPos, setEndPos] = useState<Vec3>(startPos);
 
   useFrame(() => {
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.5);
     raycaster.setFromCamera(pointer, camera);
     const intersectPoint = new THREE.Vector3();
-    raycaster.ray.intersectPlane(plane, intersectPoint);
-    if (intersectPoint) {
+    if (raycaster.ray.intersectPlane(plane, intersectPoint)) {
       setEndPos([intersectPoint.x, intersectPoint.y, intersectPoint.z]);
     }
   });
 
-  if (!startPos) return null;
-  const midPoint = [(startPos[0] + endPos[0])/2, Math.max(startPos[1], endPos[1]) + 2, (startPos[2] + endPos[2])/2];
-  
-  return <QuadraticBezierLine start={startPos as any} mid={midPoint as any} end={endPos as any} color="yellow" lineWidth={3} />;
+  return <QuadraticBezierLine start={startPos} mid={wireMid(startPos, endPos)} end={endPos} color={color} lineWidth={3} dashed dashSize={0.08} gapSize={0.05} />;
 }
 
-function InteractiveWire({ w, startPos, midPoint, endPos, onRemove }: any) {
+// Insulated jumper wire. Click selects it (colour / delete panel), right-click deletes it.
+function InteractiveWire({ w, startPos, endPos, color, selected, onSelect, onRemove }: { w: Wire; startPos: Vec3; endPos: Vec3; color: string; selected: boolean; onSelect?: (id: string) => void; onRemove?: (id: string) => void }) {
   const [hover, setHover] = useState(false);
+  const geometry = useMemo(() => {
+    const curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(...startPos), new THREE.Vector3(...wireMid(startPos, endPos)), new THREE.Vector3(...endPos));
+    return new THREE.TubeGeometry(curve, 40, 0.022, 8, false);
+  }, [startPos[0], startPos[1], startPos[2], endPos[0], endPos[1], endPos[2]]);
+  const glow = selected ? 0.3 : hover ? 0.2 : 0;
   return (
-    <QuadraticBezierLine 
-      start={startPos} 
-      mid={midPoint} 
-      end={endPos} 
-      color={hover ? "#ff4444" : "yellow"} 
-      lineWidth={hover ? 6 : 3} 
-      onClick={(e) => { 
-        e.stopPropagation(); 
-        if (onRemove) onRemove(w.id); 
-      }}
-      onPointerOver={(e) => { e.stopPropagation(); setHover(true); }}
-      onPointerOut={(e) => { e.stopPropagation(); setHover(false); }}
-    />
+    <group>
+      <mesh
+        geometry={geometry}
+        onClick={(e) => { e.stopPropagation(); onSelect?.(w.id); }}
+        onContextMenu={(e) => { e.stopPropagation(); onRemove?.(w.id); }}
+        onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
+        onPointerOut={(e) => { e.stopPropagation(); setHover(false); document.body.style.cursor = ''; }}
+      >
+        <meshStandardMaterial color={color} roughness={0.45} emissive={selected ? '#ffffff' : color} emissiveIntensity={glow} />
+      </mesh>
+      {/* Dupont-style end housings */}
+      {[startPos, endPos].map((p, i) => (
+        <mesh key={i} position={[p[0], p[1] + 0.05, p[2]]} raycast={() => null}>
+          <boxGeometry args={[0.06, 0.1, 0.06]} />
+          <meshStandardMaterial color="#151515" roughness={0.6} />
+        </mesh>
+      ))}
+    </group>
   );
+}
+
+// Re-frames the camera when the main board changes (the Nano ESP32 is much smaller).
+function CameraRig({ position }: { position: Vec3 }) {
+  const { camera, controls } = useThree() as any;
+  useEffect(() => {
+    camera.position.set(...position);
+    camera.lookAt(0, 0, 0);
+    if (controls) {
+      controls.target.set(0, 0, 0);
+      controls.update();
+    }
+  }, [camera, controls, position[0], position[1], position[2]]);
+  return null;
 }
 
 export default function Board3D(props: Board3DProps) {
   const [selectedNode, setSelectedNode] = useState<{ compId: string, pinId: string } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  // World position of a pin, on the main board or on a component.
+  const pinPos = (compId: string, pinId: string): Vec3 => {
+    if (compId === 'BOARD') return props.board.pins.find(p => p.id === pinId)?.pos ?? [0, 0, 0];
+    const comp = props.components.find(c => c.id === compId);
+    if (!comp) return [0, 0, 0];
+    const offset = getCompPinOffset(comp.type, pinId);
+    return [comp.x + offset[0], offset[1], comp.z + offset[2]];
+  };
 
   const handlePinClick = (compId: string, pinId: string) => {
     if (selectedNode !== null && (selectedNode.compId !== compId || selectedNode.pinId !== pinId)) {
@@ -525,7 +557,8 @@ export default function Board3D(props: Board3DProps) {
   };
 
   return (
-    <Canvas camera={{ position: [0, 6, 10], fov: 45 }} onPointerMissed={() => { setSelectedNode(null); if(props.onComponentSelect) props.onComponentSelect(null); }}>
+    <Canvas camera={{ position: props.board.camera, fov: 45 }} onPointerMissed={() => { setSelectedNode(null); props.onComponentSelect?.(null); props.onWireSelect?.(null); }}>
+      <CameraRig position={props.board.camera} />
       <ambientLight intensity={0.6} />
       <directionalLight position={[4, 10, 6]} intensity={2.2} />
       <directionalLight position={[-6, 4, -4]} intensity={0.6} />
@@ -538,38 +571,23 @@ export default function Board3D(props: Board3DProps) {
       </Environment>
       
       <Suspense fallback={null}>
-        <UnoQBoard {...props} onPinClick={handlePinClick} onPinRightClick={props.onWireRemove} selectedPin={selectedNode} />
+        <props.board.Model {...props} onPinClick={handlePinClick} onPinRightClick={props.onWireRemove} selectedPin={selectedNode} />
       </Suspense>
       
-      {selectedNode && <DynamicWire selectedNode={selectedNode} components={props.components} />}
-      
-      {props.wires.map(w => {
-        let startPos = [0,0,0];
-        let endPos = [0,0,0];
+      {selectedNode && <DynamicWire startPos={pinPos(selectedNode.compId, selectedNode.pinId)} color="#facc15" />}
 
-        if (w.startCompId === 'BOARD') {
-           startPos = PINS.find(p => p.id === w.startPinId)?.pos || [0,0,0];
-        } else {
-           const comp = props.components.find(c => c.id === w.startCompId);
-           if (comp) {
-             const offset = getCompPinOffset(comp.type, w.startPinId);
-             startPos = [comp.x + offset[0], offset[1], comp.z + offset[2]];
-           }
-        }
-
-        if (w.endCompId === 'BOARD') {
-           endPos = PINS.find(p => p.id === w.endPinId)?.pos || [0,0,0];
-        } else {
-           const comp = props.components.find(c => c.id === w.endCompId);
-           if (comp) {
-             const offset = getCompPinOffset(comp.type, w.endPinId);
-             endPos = [comp.x + offset[0], offset[1], comp.z + offset[2]];
-           }
-        }
-
-        const midPoint = [(startPos[0] + endPos[0])/2, Math.max(startPos[1], endPos[1]) + 2, (startPos[2] + endPos[2])/2];
-        return <InteractiveWire key={w.id} w={w} startPos={startPos as any} midPoint={midPoint as any} endPos={endPos as any} onRemove={props.onWireRemoveById} />;
-      })}
+      {props.wires.map(w => (
+        <InteractiveWire
+          key={w.id}
+          w={w}
+          startPos={pinPos(w.startCompId, w.startPinId)}
+          endPos={pinPos(w.endCompId, w.endPinId)}
+          color={props.wireColor(w)}
+          selected={props.selectedWireId === w.id}
+          onSelect={props.onWireSelect}
+          onRemove={props.onWireRemoveById}
+        />
+      ))}
 
       {props.components.map(c => {
         const commonProps = {

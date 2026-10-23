@@ -1,42 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import Editor from '@monaco-editor/react';
 import Board3D from './Board3D';
-import { PINS } from './UnoQBoard';
+import { BOARDS, BoardId, boardOf } from './boards';
 import { CircuitSimulator, SimOutput, PinDrive, SimWarning, displayNames } from './circuit/simulator';
-import { PIN_MODE, gpioName } from './circuit/board';
+import { PIN_MODE } from './circuit/board';
 import { DEFAULT_VALUES } from './circuit/components';
-import { PropertiesPanel, WarningsPanel, visualSignature, useBuzzerSound } from './CircuitPanels';
+import { PropertiesPanel, WarningsPanel, WirePanel, visualSignature, useBuzzerSound } from './CircuitPanels';
+import { endpointKind, defaultWireColor } from './wireColors';
 
 declare global {
   interface Window {
     electronAPI: any;
   }
 }
-
-const DEFAULT_CODE = `void setup() {
-  Serial.begin(115200);
-  Serial.println("Circuit Simulator Online!");
-  
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(5, OUTPUT);       // D5 -> 220 ohm resistor -> LED -> GND
-  pinMode(4, INPUT_PULLUP); // D4 -> pushbutton -> GND (internal pull-up)
-}
-
-void loop() {
-  // With the pull-up, the pin reads LOW while the button is pressed
-  int btnState = digitalRead(4);
-
-  if (btnState == LOW) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    digitalWrite(5, HIGH);
-  } else {
-    digitalWrite(LED_BUILTIN, LOW);
-    digitalWrite(5, LOW);
-  }
-  
-  delay(10);
-}
-`;
 
 export type CompType = 'LED' | 'Button' | 'Resistor' | 'Capacitor' | 'Inductor' | 'Diode' | 'Transistor' | 'Potentiometer' | 'Switch' | 'Buzzer' | 'Servo' | 'Motor' | 'OLED' | 'Breadboard';
 
@@ -57,10 +33,17 @@ export interface Wire {
   startPinId: string;
   endCompId: string;
   endPinId: string;
+  color?: string; // insulation colour; missing in older circuit files (then picked by convention)
 }
 
 function App() {
-  const [code, setCode] = useState(DEFAULT_CODE);
+  // Main board: what the sketch is compiled for and what the circuit is wired to.
+  const [boardId, setBoardId] = useState<BoardId>('unoq');
+  const board = BOARDS[boardId];
+  const boardRef = useRef(board);
+  useEffect(() => { boardRef.current = board; }, [board]);
+
+  const [code, setCode] = useState(board.defaultCode);
   const [output, setOutput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   
@@ -77,6 +60,7 @@ function App() {
   const [wires, setWires] = useState<Wire[]>([]);
   const [selectedCompId, setSelectedCompId] = useState<string | null>(null);
   const [compToDelete, setCompToDelete] = useState<string | null>(null);
+  const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
   
   // To keep track of states synchronously for the IPC closure without dependency hell
   const wiresRef = useRef<Wire[]>(wires);
@@ -102,11 +86,12 @@ function App() {
     });
 
     const unsubscribeIpc = window.electronAPI.onIpcMessage((msg: any) => {
-      if (msg.action === 'pinMode' && msg.pin <= 21) {
+      const maxGpio = boardRef.current.electrical.maxGpio;
+      if (msg.action === 'pinMode' && msg.pin <= maxGpio) {
         const prev = pinDrivesRef.current.get(msg.pin);
         pinDrivesRef.current.set(msg.pin, { mode: msg.mode, duty: prev?.duty ?? 0 });
       }
-      if ((msg.action === 'digitalWrite' || msg.action === 'analogWrite') && msg.pin <= 21) {
+      if ((msg.action === 'digitalWrite' || msg.action === 'analogWrite') && msg.pin <= maxGpio) {
         // Header pins: hand the new level to the circuit simulation.
         const prev = pinDrivesRef.current.get(msg.pin) ?? { mode: PIN_MODE.INPUT, duty: 0 };
         if (msg.action === 'analogWrite') {
@@ -120,6 +105,11 @@ function App() {
         const val = msg.action === 'digitalWrite' ? (msg.value ? 255 : 0) : msg.value;
 
         if (msg.pin === 13) setLedState(msg.value);
+        else if (boardRef.current.id === 'nanoesp32') {
+          // Nano ESP32 RGB LED on D14 (red), D15 (green), D16 (blue): active LOW
+          const channel = msg.pin - 14;
+          if (channel >= 0 && channel <= 2) setRgb1(r => r.map((c, i) => (i === channel ? 255 - val : c)));
+        }
         else if (msg.pin === 141) setRgb1(r => [val, r[1], r[2]]);
         else if (msg.pin === 142) setRgb1(r => [r[0], val, r[2]]);
         else if (msg.pin === 160) setRgb1(r => [r[0], r[1], val]);
@@ -147,8 +137,13 @@ function App() {
   // and feeds the resulting input-pin levels back to the running sketch.
   useEffect(() => {
     const simulator = new CircuitSimulator();
-    const labels = new Map(PINS.map(p => [p.id, p.label]));
-    const pinLabel = (id: string) => labels.get(id) ?? '';
+    const labelCache = new Map<string, Map<string, string>>();
+    const pinLabel = (id: string) => {
+      const b = boardRef.current;
+      let labels = labelCache.get(b.id);
+      if (!labels) { labels = new Map(b.pins.map(p => [p.id, p.label])); labelCache.set(b.id, labels); }
+      return labels.get(id) ?? '';
+    };
     let last = performance.now();
     let lastPublish = 0;
     let lastSignature = '';
@@ -157,6 +152,7 @@ function App() {
       const elapsed = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
       last = now;
       const out = simulator.step({
+        board: boardRef.current.electrical,
         components: componentsRef.current,
         wires: wiresRef.current,
         pinLabel,
@@ -221,10 +217,14 @@ function App() {
     runningRef.current = true;
     setIsRunning(true);
     if (window.electronAPI) {
-      const res = await window.electronAPI.compileAndRun(code);
+      const res = await window.electronAPI.compileAndRun(code, boardId);
       if (!res.success) {
         runningRef.current = false;
         setIsRunning(false);
+      } else {
+        // Inputs sent while g++ was compiling were dropped (no process yet): forget them so the
+        // next simulation tick re-sends every input pin, including ones that never change.
+        lastSentRef.current = new Map();
       }
     }
   };
@@ -269,7 +269,7 @@ function App() {
   };
 
   const handleSaveCircuit = () => {
-    const config = { components, wires };
+    const config = { board: boardId, components, wires };
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -290,8 +290,15 @@ function App() {
           try {
             const config = JSON.parse(event.target.result as string);
             if (config.components && config.wires) {
+              const next = boardOf(config.board);
+              if (next.id !== boardId) {
+                if (isRunning) handleStop();
+                if (code === board.defaultCode) setCode(next.defaultCode);
+                setBoardId(next.id);
+              }
               setComponents(config.components);
               setWires(config.wires);
+              setSelectedWireId(null);
             } else {
               alert('Invalid circuit file format.');
             }
@@ -319,14 +326,50 @@ function App() {
     setComponents(prev => [...prev, newComp]);
   };
 
+  const kindOf = (compId: string, pinId: string) => endpointKind(compId, pinId, id => board.electrical.pinRole(id, board.pins.find(p => p.id === id)?.label));
+
+  // Wires from older circuit files have no colour: pick one by convention, in a stable order.
+  const autoWireColors = useMemo(() => {
+    const colors = new Map<string, string>();
+    let signals = 0;
+    for (const w of wires) {
+      const a = kindOf(w.startCompId, w.startPinId), b = kindOf(w.endCompId, w.endPinId);
+      const color = defaultWireColor(a, b, signals);
+      if (a === 'signal' && b === 'signal') signals++;
+      colors.set(w.id, color);
+    }
+    return colors;
+  }, [wires, board]);
+  const wireColor = (w: Wire) => w.color ?? autoWireColors.get(w.id) ?? '#facc15';
+
   const onWireAdded = (startCompId: string, startPinId: string, endCompId: string, endPinId: string) => {
-    setWires(prev => [...prev.filter(w => !(
-      (w.startCompId === startCompId && w.startPinId === startPinId && w.endCompId === endCompId && w.endPinId === endPinId) ||
-      (w.startCompId === endCompId && w.startPinId === endPinId && w.endCompId === startCompId && w.endPinId === startPinId)
-    )), {
-      id: 'w_' + Date.now(),
-      startCompId, startPinId, endCompId, endPinId
-    }]);
+    setWires(prev => {
+      const rest = prev.filter(w => !(
+        (w.startCompId === startCompId && w.startPinId === startPinId && w.endCompId === endCompId && w.endPinId === endPinId) ||
+        (w.startCompId === endCompId && w.startPinId === endPinId && w.endCompId === startCompId && w.endPinId === startPinId)
+      ));
+      const signalWires = rest.filter(w => kindOf(w.startCompId, w.startPinId) === 'signal' && kindOf(w.endCompId, w.endPinId) === 'signal').length;
+      return [...rest, {
+        id: 'w_' + Date.now(),
+        startCompId, startPinId, endCompId, endPinId,
+        color: defaultWireColor(kindOf(startCompId, startPinId), kindOf(endCompId, endPinId), signalWires),
+      }];
+    });
+  };
+
+  // Switching board keeps the parts and the wires whose header pin also exists on the new board.
+  const changeBoard = (id: BoardId) => {
+    if (id === boardId) return;
+    if (isRunning) handleStop();
+    const next = BOARDS[id];
+    const valid = new Set(next.pins.map(p => p.id));
+    const orphan = (w: Wire) => (w.startCompId === 'BOARD' && !valid.has(w.startPinId)) || (w.endCompId === 'BOARD' && !valid.has(w.endPinId));
+    const dropped = wires.filter(orphan).length;
+    setWires(prev => prev.filter(w => !orphan(w)));
+    setSelectedWireId(null);
+    if (code === board.defaultCode) setCode(next.defaultCode);
+    setBoardId(id);
+    setOutput(`> Board: ${next.name}${dropped ? ` (${dropped} wire${dropped > 1 ? 's' : ''} to pins it does not have were removed)` : ''}\n`);
   };
 
   // Buttons, switches and potentiometers only change their own state: what the sketch reads
@@ -361,13 +404,20 @@ function App() {
 
   const removeWireById = (wireId: string) => {
     setWires(prev => prev.filter(w => w.id !== wireId));
+    if (selectedWireId === wireId) setSelectedWireId(null);
+  };
+
+  const describeEndpoint = (compId: string, pinId: string) => {
+    if (compId === 'BOARD') return `${board.name.replace('Arduino ', '')} ${board.pins.find(p => p.id === pinId)?.label ?? pinId}`;
+    const name = displayNames(components)[compId] ?? compId;
+    return `${name} (${pinId})`;
   };
 
   const warnings: SimWarning[] = [
     ...(sim?.warnings ?? []),
     ...writeWithoutOutput.map(pin => ({
       key: `nowrite:${pin}`, level: 'warn' as const,
-      text: `digitalWrite(${pin}, …) has no effect: ${gpioName(pin)} is not set as an output. Add pinMode(${pin}, OUTPUT) in setup().`,
+      text: `digitalWrite(${pin}, …) has no effect: ${board.electrical.gpioName(pin)} is not set as an output. Add pinMode(${pin}, OUTPUT) in setup().`,
     })),
   ];
 
@@ -376,6 +426,14 @@ function App() {
       <div className="toolbar">
         <div className="brand">Virtual Arduino Simulator</div>
         <div style={{ display: 'flex', gap: '10px', marginRight: 'auto', marginLeft: '20px' }}>
+          <select
+            title="Main board: the sketch is compiled for it and the circuit is wired to it"
+            value={boardId}
+            onChange={(e) => changeBoard(e.target.value as BoardId)}
+            style={{ padding: '8px', borderRadius: '4px', background: '#0b3d40', color: '#fff', border: '1px solid #00979d', fontWeight: 600 }}
+          >
+            {Object.values(BOARDS).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
           <select 
             style={{ padding: '8px', borderRadius: '4px', background: '#333', color: '#fff', border: '1px solid #555' }}
             onChange={(e) => { 
@@ -455,12 +513,27 @@ function App() {
           </div>
           <div style={{position: 'absolute', top: 10, left: 10, color: '#aaa', fontSize: 12, zIndex: 10, background: 'rgba(0,0,0,0.5)', padding: '5px', borderRadius: '4px'}}>
             Drag components to move them.<br/>
-            Left Click a Pin, then click a Component to wire them up!<br/>
-            Left Click a Component to select it and edit parameters.<br/>
-            Right Click a Component to delete it.<br/>
-            Right Click a Pin to remove its wire.
+            Click a pin, then another pin, to connect them with a wire.<br/>
+            Click a wire to change its colour or delete it (right click deletes it).<br/>
+            Click a component to edit it, right click to delete it.<br/>
+            Right click a pin to remove its wires.
           </div>
           
+          {selectedWireId && !selectedCompId && (() => {
+            const w = wires.find(x => x.id === selectedWireId);
+            if (!w) return null;
+            return (
+              <WirePanel
+                from={describeEndpoint(w.startCompId, w.startPinId)}
+                to={describeEndpoint(w.endCompId, w.endPinId)}
+                color={wireColor(w)}
+                onColor={color => setWires(prev => prev.map(x => x.id === w.id ? { ...x, color } : x))}
+                onDelete={() => removeWireById(w.id)}
+                onClose={() => setSelectedWireId(null)}
+              />
+            );
+          })()}
+
           {selectedCompId && (() => {
             const comp = components.find(c => c.id === selectedCompId);
             if (!comp) return null;
@@ -514,6 +587,7 @@ function App() {
           )}
 
           <Board3D 
+            board={board}
             sim={sim}
             ledState={ledState} 
             matrixFrame={matrixFrame} 
@@ -526,7 +600,10 @@ function App() {
             onComponentRemove={requestRemoveComponent}
             onWireRemove={removeWire}
             onWireRemoveById={removeWireById}
-            onComponentSelect={setSelectedCompId}
+            selectedWireId={selectedWireId}
+            onWireSelect={id => { setSelectedWireId(id); if (id) setSelectedCompId(null); }}
+            wireColor={wireColor}
+            onComponentSelect={id => { setSelectedCompId(id); if (id) setSelectedWireId(null); }}
             selectedCompId={selectedCompId}
           />
         </div>

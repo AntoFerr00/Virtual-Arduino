@@ -1,4 +1,4 @@
-// Real-time electrical simulation of the breadboard circuit attached to the UNO Q.
+// Real-time electrical simulation of the breadboard circuit attached to the main board.
 //
 // Each tick the circuit is rebuilt from components/wires, then integrated in time with
 // backward-Euler steps (capacitors/inductors) and solved with Newton-Raphson (LEDs, diodes,
@@ -6,10 +6,7 @@
 // and decide when a part is over-stressed and burns out.
 import type { ExternalComponent, Wire } from '../App';
 import { NodalSystem, limexp, pnjlim } from './solver';
-import {
-  VDD_IO, GPIO_R_OUT, GPIO_I_RATED, GPIO_I_ABS_MAX, PULL_R, V_IH, V_IL, ADC_MAX, PIN_MODE,
-  RAILS, RailName, pinRole, gpioName, gpioMaxInputVoltage,
-} from './board';
+import { PIN_MODE, RailName, BoardElectrical, PinRole } from './board';
 import {
   VT, LED, LED_COLORS, ledColorOf, DIODE, BJT, RESISTOR_P_MAX, POT_P_MAX, BUTTON_R_ON, BUZZER,
   MOTOR, SERVO, OLED, INDUCTOR_DCR, ELECTROLYTIC_MIN_C, valueOr,
@@ -38,7 +35,7 @@ export interface CompResult {
 export interface PinReading {
   v: number;
   digital: 0 | 1;
-  analog: number;
+  analog: number; // millivolts seen by the ADC (the sketch scales them to its resolution)
   floating: boolean;
   current: number; // sourced by the pin (negative = sinking)
 }
@@ -58,6 +55,7 @@ export interface SimOutput {
 }
 
 export interface SimInput {
+  board: BoardElectrical;
   components: ExternalComponent[];
   wires: Wire[];
   pinLabel: (pinId: string) => string;
@@ -331,6 +329,7 @@ export class CircuitSimulator {
 
   step(input: SimInput, elapsed: number): SimOutput {
     this.time += elapsed;
+    const board = input.board;
     const net = this.build(input);
     const signature = net.signature;
     if (signature !== this.trippedSignature) this.tripped.clear(); // re-arm after rewiring
@@ -354,7 +353,7 @@ export class CircuitSimulator {
         vLow = pwmSources.length ? this.newton(net, { dt, high: false }, vLow).v : vHigh;
         // Rail protection: an overloaded rail switches off (USB-C input switch / LDO limit).
         const Vh = nodeFn(vHigh);
-        const over = net.sources.filter(r => r.kind === 'rail' && !this.tripped.has(r.name as RailName) && Math.abs(r.current(Vh, { dt, high: true })) > RAILS[r.name as RailName].iLimit);
+        const over = net.sources.filter(r => r.kind === 'rail' && !this.tripped.has(r.name as RailName) && Math.abs(r.current(Vh, { dt, high: true })) > (board.rails[r.name as RailName]?.iLimit ?? Infinity));
         if (!over.length) break;
         over.forEach(r => this.tripped.add(r.name as RailName));
         this.trippedSignature = signature;
@@ -392,13 +391,14 @@ export class CircuitSimulator {
       const iL = src.dev.current(Vl, ctxL);
       const isPwm = pwmSources.includes(src);
       const current = isPwm ? src.duty * iH + (1 - src.duty) * iL : iH;
-      out.pins[src.pin] = this.readPin(src.pin, v, current, false);
+      out.pins[src.pin] = this.readPin(board, src.pin, v, current, false);
       const peak = isPwm && Math.abs(iL) > Math.abs(iH) ? iL : iH;
-      if (src.mode === PIN_MODE.OUTPUT && Math.abs(peak) > GPIO_I_RATED) {
+      if (src.mode === PIN_MODE.OUTPUT && Math.abs(peak) > board.iRated) {
         const abs = Math.abs(peak);
+        const absMax = peak < 0 ? board.iSinkMax : board.iSourceMax;
         out.warnings.push({
-          key: `pin-i:${src.pin}`, level: abs > GPIO_I_ABS_MAX ? 'error' : 'warn',
-          text: `${gpioName(src.pin)} ${peak < 0 ? 'sinks' : 'sources'} ${formatSI(abs, 'A')}, over the ${formatSI(GPIO_I_RATED, 'A')} a pin can handle${abs > GPIO_I_ABS_MAX ? ' (this damages the MCU)' : ''}. Add a resistor, or use a transistor for loads like motors.`,
+          key: `pin-i:${src.pin}`, level: abs > absMax ? 'error' : 'warn',
+          text: `${board.gpioName(src.pin)} ${peak < 0 ? 'sinks' : 'sources'} ${formatSI(abs, 'A')}, over the ${formatSI(board.iRated, 'A')} a pin can handle${abs > absMax ? ' (this damages the MCU)' : ''}. Add a resistor, or use a transistor for loads like motors.`,
         });
       }
     }
@@ -413,12 +413,13 @@ export class CircuitSimulator {
         const x = sysHigh.solve(e);
         floating = !x || x[node] > FLOATING_R;
       }
-      if (!out.pins[pin]) out.pins[pin] = this.readPin(pin, v, 0, floating);
+      if (!out.pins[pin]) out.pins[pin] = this.readPin(board, pin, v, 0, floating);
       if (floating && input.running && input.pins.has(pin)) {
-        out.warnings.push({ key: `float:${pin}`, level: 'warn', text: `${gpioName(pin)} is floating: its reading is random. Add a pull-down/pull-up resistor (e.g. 10 kΩ) or use INPUT_PULLUP.` });
+        out.warnings.push({ key: `float:${pin}`, level: 'warn', text: `${board.gpioName(pin)} is floating: its reading is random. Add a pull-down/pull-up resistor (e.g. 10 kΩ) or use INPUT_PULLUP.` });
       }
-      if (v > gpioMaxInputVoltage(pin) + 0.05) {
-        out.warnings.push({ key: `pin-v:${pin}`, level: 'error', text: `${gpioName(pin)} sees ${formatSI(v, 'V')}: above its ${gpioMaxInputVoltage(pin)} V limit${pin === 14 || pin === 15 ? ' (A0/A1 are not 5 V tolerant)' : ''}.` });
+      const vMax = board.maxInputVoltage(pin);
+      if (v > vMax + 0.05) {
+        out.warnings.push({ key: `pin-v:${pin}`, level: 'error', text: `${board.gpioName(pin)} sees ${formatSI(v, 'V')}: above its ${vMax} V limit${board.overVoltageNote?.(pin) ?? ''}.` });
       }
     }
     for (const rail of this.tripped) {
@@ -427,20 +428,20 @@ export class CircuitSimulator {
     return out;
   }
 
-  private readPin(pin: number, v: number, current: number, floating: boolean): PinReading {
+  private readPin(board: BoardElectrical, pin: number, v: number, current: number, floating: boolean): PinReading {
     if (floating) {
       // An unconnected CMOS input picks up noise: the reading wanders.
       let f = this.floatingBits.get(pin);
       if (!f || this.time >= f.next) {
-        f = { digital: Math.random() < 0.5 ? 0 : 1, analog: Math.round(250 + Math.random() * 500), next: this.time + 0.08 + Math.random() * 0.3 };
+        f = { digital: Math.random() < 0.5 ? 0 : 1, analog: Math.round(800 + Math.random() * 1700), next: this.time + 0.08 + Math.random() * 0.3 };
         this.floatingBits.set(pin, f);
       }
       return { v, digital: f.digital, analog: f.analog, floating, current };
     }
     const prev = this.lastDigital.get(pin) ?? 0;
-    const digital: 0 | 1 = v >= V_IH ? 1 : v <= V_IL ? 0 : prev; // Schmitt trigger
+    const digital: 0 | 1 = v >= 0.7 * board.vddIo ? 1 : v <= 0.3 * board.vddIo ? 0 : prev; // Schmitt trigger
     this.lastDigital.set(pin, digital);
-    const analog = Math.round(Math.min(ADC_MAX, Math.max(0, (v / VDD_IO) * ADC_MAX)));
+    const analog = Math.round(Math.min(board.vddIo, Math.max(0, v)) * 1000);
     return { v, digital, analog, floating, current };
   }
 
@@ -493,10 +494,11 @@ export class CircuitSimulator {
 
   private build(input: SimInput): Netlist {
     const uf = new UnionFind();
-    const roles = new Map<string, ReturnType<typeof pinRole>>();
+    const board = input.board;
+    const roles = new Map<string, PinRole>();
     const boardKey = (pinId: string) => {
       let role = roles.get(pinId);
-      if (!role) { role = pinRole(pinId, input.pinLabel(pinId)); roles.set(pinId, role); }
+      if (!role) { role = board.pinRole(pinId, input.pinLabel(pinId)); roles.set(pinId, role); }
       switch (role.kind) {
         case 'gnd': return 'GND';
         case 'rail': return `RAIL:${role.rail}`;
@@ -585,11 +587,11 @@ export class CircuitSimulator {
       const root = uf.find(k);
       return root === gndRoot ? -1 : index.get(root);
     };
-    for (const rail of Object.keys(RAILS) as RailName[]) {
+    for (const [rail, spec] of Object.entries(board.rails) as [RailName, { v: number; r: number }][]) {
       const i = boardNode(`RAIL:${rail}`);
-      if (i !== undefined) sources.push(new SourceDev(i, 'rail', rail, RAILS[rail].r, () => RAILS[rail].v));
+      if (i !== undefined) sources.push(new SourceDev(i, 'rail', rail, spec.r, () => spec.v));
     }
-    for (let pin = 0; pin <= 21; pin++) {
+    for (let pin = 0; pin <= board.maxGpio; pin++) {
       const i = boardNode(`GPIO:${pin}`);
       if (i !== undefined) gpioNodes.set(pin, i);
     }
@@ -599,11 +601,11 @@ export class CircuitSimulator {
       const duty = drive?.duty ?? 0;
       let dev: SourceDev | null = null;
       if (mode === PIN_MODE.OUTPUT) {
-        dev = new SourceDev(nodeIdx, 'gpio', gpioName(pin), GPIO_R_OUT, ctx => (duty >= 1 ? VDD_IO : duty <= 0 ? 0 : ctx.high ? VDD_IO : 0));
+        dev = new SourceDev(nodeIdx, 'gpio', board.gpioName(pin), board.gpioROut, ctx => (duty >= 1 ? board.vddIo : duty <= 0 ? 0 : ctx.high ? board.vddIo : 0));
       } else if (mode === PIN_MODE.INPUT_PULLUP) {
-        dev = new SourceDev(nodeIdx, 'gpio', gpioName(pin), PULL_R, () => VDD_IO);
+        dev = new SourceDev(nodeIdx, 'gpio', board.gpioName(pin), board.pullR, () => board.vddIo);
       } else if (mode === PIN_MODE.INPUT_PULLDOWN) {
-        dev = new SourceDev(nodeIdx, 'gpio', gpioName(pin), PULL_R, () => 0);
+        dev = new SourceDev(nodeIdx, 'gpio', board.gpioName(pin), board.pullR, () => 0);
       }
       if (dev) {
         sources.push(dev);
