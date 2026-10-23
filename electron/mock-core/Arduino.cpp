@@ -3,6 +3,10 @@
 #include <condition_variable>
 
 SerialMock Serial;
+SerialMock Serial1(false);
+#ifdef BOARD_NANO_ESP32
+SerialMock Serial0(false);
+#endif
 static auto startTime = std::chrono::steady_clock::now();
 
 std::map<uint8_t, int> pinStates;
@@ -35,7 +39,7 @@ static void emitIpc(const std::string& json) {
 
 size_t SerialMock::print(const char* s) {
     std::string text(s ? s : "");
-    writeOut(text);
+    if (console) writeOut(text);
     return text.size();
 }
 
@@ -45,7 +49,7 @@ size_t SerialMock::printf(const char* format, ...) {
     va_start(args, format);
     int n = vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
-    writeOut(buf);
+    if (console) writeOut(buf);
     return n > 0 ? (size_t)n : 0;
 }
 
@@ -185,11 +189,13 @@ int analogRead(uint8_t pin) {
     return (int)std::min(full, std::max(0L, value));
 }
 
-// `value` is in the current analogWrite resolution; the app works with 0-255.
-static void sendPwm(uint8_t pin, uint32_t value, int bits) {
+// `value` is in the current analogWrite resolution; the app works with 0-255. `freq` (Hz) is sent
+// when the sketch set it (LEDC): an ESC on the pin then reads the pulse width.
+static void sendPwm(uint8_t pin, uint32_t value, int bits, uint32_t freq = 0) {
     const double full = (double)((1UL << bits) - 1);
     long duty255 = std::lround(std::min(1.0, value / full) * 255.0);
-    emitIpc("{\"action\":\"analogWrite\",\"pin\":" + std::to_string(pin) + ",\"value\":" + std::to_string(duty255) + "}");
+    emitIpc("{\"action\":\"analogWrite\",\"pin\":" + std::to_string(pin) + ",\"value\":" + std::to_string(duty255)
+            + (freq ? ",\"freq\":" + std::to_string(freq) : std::string()) + "}");
 }
 
 void analogWrite(uint8_t pin, int val) {
@@ -206,22 +212,23 @@ void noTone(uint8_t pin) {
 }
 
 #ifdef BOARD_NANO_ESP32
-static std::map<uint8_t, int> ledcPinBits;     // pin -> resolution
-static std::map<uint8_t, int> ledcChannelBits; // 2.x API: channel -> resolution
+struct LedcConfig { int bits; uint32_t freq; };
+static std::map<uint8_t, LedcConfig> ledcPins;     // pin -> resolution and frequency
+static std::map<uint8_t, LedcConfig> ledcChannels; // 2.x API: channel -> resolution and frequency
 static std::map<uint8_t, uint8_t> ledcChannelPin;
 
 bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution) {
-    ledcPinBits[pin] = resolution;
+    ledcPins[pin] = { resolution, freq };
     return true;
 }
 
 bool ledcDetach(uint8_t pin) {
-    ledcPinBits.erase(pin);
+    ledcPins.erase(pin);
     return true;
 }
 
 uint32_t ledcSetup(uint8_t channel, uint32_t freq, uint8_t resolution) {
-    ledcChannelBits[channel] = resolution;
+    ledcChannels[channel] = { resolution, freq };
     return freq;
 }
 
@@ -233,11 +240,14 @@ void ledcAttachPin(uint8_t pin, uint8_t channel) {
 bool ledcWrite(uint8_t pinOrChannel, uint32_t duty) {
     auto ch = ledcChannelPin.find(pinOrChannel);
     if (ch != ledcChannelPin.end()) {
-        sendPwm(ch->second, duty, ledcChannelBits.count(pinOrChannel) ? ledcChannelBits[pinOrChannel] : 8);
+        auto cfg = ledcChannels.find(pinOrChannel);
+        if (cfg != ledcChannels.end()) sendPwm(ch->second, duty, cfg->second.bits, cfg->second.freq);
+        else sendPwm(ch->second, duty, 8);
         return true;
     }
-    auto it = ledcPinBits.find(pinOrChannel);
-    sendPwm(pinOrChannel, duty, it != ledcPinBits.end() ? it->second : 8);
+    auto it = ledcPins.find(pinOrChannel);
+    if (it != ledcPins.end()) sendPwm(pinOrChannel, duty, it->second.bits, it->second.freq);
+    else sendPwm(pinOrChannel, duty, 8);
     return true;
 }
 #endif

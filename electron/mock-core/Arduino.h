@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
+#include <cstring>
 
 #define HIGH 0x1
 #define LOW  0x0
@@ -40,7 +41,24 @@
 #ifdef BOARD_NANO_ESP32
 // ---- Arduino Nano ESP32 -------------------------------------------------------
 #define ARDUINO_NANO_ESP32
+#define ARDUINO_ARCH_ESP32
 #define ESP32
+// Digital pins by Arduino number (the Nano ESP32 default pin numbering)
+#define D0 0
+#define D1 1
+#define D2 2
+#define D3 3
+#define D4 4
+#define D5 5
+#define D6 6
+#define D7 7
+#define D8 8
+#define D9 9
+#define D10 10
+#define D11 11
+#define D12 12
+#define D13 13
+#define SERIAL_8N1 0x800001c
 #define LED_BUILTIN 13 // D13 (GPIO48), shared with the header pin
 // Onboard RGB LED, active LOW (write LOW to light a colour)
 #define LED_RED   14
@@ -99,6 +117,10 @@ typedef uint16_t word;
 #ifndef PI
 #define PI 3.14159265358979323846
 #endif
+#define HALF_PI 1.57079632679489661923
+#define TWO_PI 6.28318530717958647693
+#define DEG_TO_RAD 0.017453292519943295769
+#define RAD_TO_DEG 57.295779513082320877
 
 using std::min;
 using std::max;
@@ -167,10 +189,14 @@ public:
     static std::string fixed(double v, int decimals);
 };
 
-// Serial mock: everything printed goes to the app's Serial Monitor.
+// Serial mock. `Serial` (USB) prints to the app's Serial Monitor. The UART on D0/D1 (`Serial1`,
+// and `Serial0` on the Nano ESP32) is not simulated: what is written there is dropped and nothing
+// is ever received, so a receiver on D0/D1 stays silent.
 class SerialMock {
 public:
+    explicit SerialMock(bool console = true) : console(console) {}
     void begin(unsigned long baudrate) {}
+    void begin(unsigned long baudrate, uint32_t config, int8_t rxPin = -1, int8_t txPin = -1) {}
     void end() {}
     operator bool() const { return true; }
     int available() { return 0; }
@@ -193,9 +219,17 @@ public:
 
     size_t printf(const char* format, ...);
     size_t write(uint8_t c) { return print((char)c); }
+    size_t write(const uint8_t* buf, size_t n) { for (size_t i = 0; i < n; i++) write(buf[i]); return n; }
+
+private:
+    bool console;
 };
 
 extern SerialMock Serial;
+extern SerialMock Serial1;
+#ifdef BOARD_NANO_ESP32
+extern SerialMock Serial0;
+#endif
 
 #ifndef BOARD_NANO_ESP32
 // Arduino_LED_Matrix Mock (UNO Q 8x13 matrix)

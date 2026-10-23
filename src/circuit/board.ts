@@ -21,6 +21,7 @@ export interface BoardElectrical {
   pullR: number; // internal pull-up / pull-down
   rails: Partial<Record<RailName, RailSpec>>;
   maxGpio: number; // highest Arduino pin number
+  i2c: { sda: number; scl: number }; // default Wire bus (A4 / A5)
   // `label` is the human-readable pin label (needed for the UNO Q JMISC/JMEDIA power pins).
   pinRole(id: string, label?: string): PinRole;
   gpioName(pin: number): string;
@@ -49,6 +50,7 @@ export const UNO_Q_ELECTRICAL: BoardElectrical = {
     '1V8': { v: 1.8, r: 0.3, iLimit: 0.3 },
   },
   maxGpio: 21,
+  i2c: { sda: 18, scl: 19 }, // A4 / A5 (I2C3)
   pinRole(id, label = '') {
     if (UNO_Q_GND_IDS.has(id) || /: GND$/.test(label)) return { kind: 'gnd' };
     if (id === '5V' || id === 'SPI2_5V' || /: 5V$/.test(label)) return { kind: 'rail', rail: '5V' };
@@ -81,6 +83,7 @@ export const NANO_ESP32_ELECTRICAL: BoardElectrical = {
     '3V3': { v: 3.3, r: 0.1, iLimit: 1.0 }, // MP2322 step-down output
   },
   maxGpio: 24,
+  i2c: { sda: 21, scl: 22 }, // A4 / A5
   pinRole(id) {
     if (id === 'GND_1' || id === 'GND_2') return { kind: 'gnd' };
     if (id === 'VBUS') return { kind: 'rail', rail: '5V' };

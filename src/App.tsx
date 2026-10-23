@@ -92,13 +92,13 @@ function App() {
       const maxGpio = boardRef.current.electrical.maxGpio;
       if (msg.action === 'pinMode' && msg.pin <= maxGpio) {
         const prev = pinDrivesRef.current.get(msg.pin);
-        pinDrivesRef.current.set(msg.pin, { mode: msg.mode, duty: prev?.duty ?? 0 });
+        pinDrivesRef.current.set(msg.pin, { mode: msg.mode, duty: prev?.duty ?? 0, freq: prev?.freq });
       }
       if ((msg.action === 'digitalWrite' || msg.action === 'analogWrite') && msg.pin <= maxGpio) {
         // Header pins: hand the new level to the circuit simulation.
         const prev = pinDrivesRef.current.get(msg.pin) ?? { mode: PIN_MODE.INPUT, duty: 0 };
         if (msg.action === 'analogWrite') {
-          pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, msg.value / 255)) });
+          pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, msg.value / 255)), freq: msg.freq });
         } else {
           pinDrivesRef.current.set(msg.pin, { ...prev, duty: msg.value ? 1 : 0 });
           if (prev.mode !== PIN_MODE.OUTPUT) setWriteWithoutOutput(w => (w.includes(msg.pin) ? w : [...w, msg.pin]));

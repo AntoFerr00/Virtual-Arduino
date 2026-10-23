@@ -56,12 +56,15 @@ export function lipoOf(value?: string): { cells: number; vCell: number } {
 }
 
 // 30 A BLHeli ESC driving a 2207 brushless motor with a 5" prop. The battery current grows with
-// throttle^1.5 (propeller load) up to `iFull` at full throttle on a charged 4S pack; the ESC
-// reads the throttle from the duty of the signal (like a servo) and has a 5 V 2 A BEC.
+// throttle^1.5 (propeller load) up to `iFull` at full throttle on a charged 4S pack; it has a
+// 5 V 2 A BEC. When the sketch sets the PWM frequency (ledcAttach) the ESC reads the pulse width
+// like a real one: 1000 us = stop, 2000 us = full, at 40-500 Hz; pulses outside 800-2200 us are
+// not a valid signal. With analogWrite (frequency unknown) the duty itself is the throttle.
 export const ESC = {
   vMin: 6.0, vMax: 25.2, vAbsMax: 26, iRated: 30, vNominal: 16.8, iIdle: 0.03, iFull: 15,
   rSignal: 100e3, vSignalHigh: 1.5, vSignalMax: 5.0, deadband: 0.02,
   bec: { v: 5.0, r: 0.05, iMax: 2 },
+  pulse: { minUs: 1000, maxUs: 2000, validMinUs: 800, validMaxUs: 2200, freqMin: 40, freqMax: 500 },
 };
 
 // "CW 15A": propeller direction (CW / CCW, seen from above) and the current at full throttle.

@@ -17,6 +17,7 @@ import { formatSI } from './units';
 export interface PinDrive {
   mode: number; // PIN_MODE
   duty: number; // OUTPUT level: 0 = LOW, 1 = HIGH, in between = PWM (analogWrite)
+  freq?: number; // PWM frequency in Hz, when the sketch set it (ledcAttach): ESCs then read the pulse width
 }
 
 export interface CompResult {
@@ -278,8 +279,18 @@ class LipoDev extends Device {
   }
 }
 
-function escThrottle(duty: number): number {
-  return duty < ESC.deadband ? 0 : Math.min(1, duty);
+// Pulse width the ESC sees, or undefined when the PWM frequency is unknown (analogWrite).
+function escPulseUs(duty: number, freq?: number): number | undefined {
+  return freq ? (duty * 1e6) / freq : undefined;
+}
+
+function escThrottle(duty: number, freq?: number): number {
+  const us = escPulseUs(duty, freq);
+  if (us === undefined || !freq) return duty < ESC.deadband ? 0 : Math.min(1, duty);
+  const { minUs, maxUs, validMinUs, validMaxUs, freqMin, freqMax } = ESC.pulse;
+  if (freq < freqMin || freq > freqMax || us < validMinUs || us > validMaxUs) return 0;
+  const t = (us - minUs) / (maxUs - minUs);
+  return t < ESC.deadband ? 0 : Math.min(1, t);
 }
 
 // ESC + brushless motor ('-' and the signal GND are the same copper, joined in the netlist).
@@ -299,7 +310,7 @@ class EscDev extends Device {
     this.powered = vin >= ESC.vMin && vin <= ESC.vAbsMax;
     this.signalSeen = (store.get(`${comp.id}:sig`) ?? 0) >= ESC.vSignalHigh;
   }
-  setDuty(duty: number) { this.throttle = this.powered && this.signalSeen ? escThrottle(duty) : 0; }
+  setDuty(duty: number, freq?: number) { this.throttle = this.powered && this.signalSeen ? escThrottle(duty, freq) : 0; }
   private get g() { return (ESC.iIdle + (this.powered ? this.iFull * Math.pow(this.throttle, 1.5) : 0)) / ESC.vNominal; }
   stamp(sys: NodalSystem) {
     sys.addConductance(this.p, this.m, this.g);
@@ -738,6 +749,7 @@ export class CircuitSimulator {
       const drive = input.running ? input.pins.get(pin) : undefined;
       const mode = drive?.mode ?? PIN_MODE.INPUT;
       const duty = drive?.duty ?? 0;
+      const freq = drive?.freq;
       let dev: SourceDev | null = null;
       if (mode === PIN_MODE.OUTPUT) {
         dev = new SourceDev(nodeIdx, 'gpio', board.gpioName(pin), board.gpioROut, ctx => (duty >= 1 ? board.vddIo : duty <= 0 ? 0 : ctx.high ? board.vddIo : 0));
@@ -748,16 +760,19 @@ export class CircuitSimulator {
       }
       if (dev) {
         sources.push(dev);
-        gpio.push({ pin, node: nodeIdx, mode, duty: mode === PIN_MODE.OUTPUT ? duty : 1, dev });
+        gpio.push({ pin, node: nodeIdx, mode, duty: mode === PIN_MODE.OUTPUT ? duty : 1, freq, dev });
       }
     }
     for (const d of devices) {
-      if (d instanceof EscDev) d.setDuty(gpio.find(g => g.node === d.s && g.mode === PIN_MODE.OUTPUT)?.duty ?? 0);
+      if (d instanceof EscDev) {
+        const driver = gpio.find(g => g.node === d.s && g.mode === PIN_MODE.OUTPUT);
+        d.setDuty(driver?.duty ?? 0, driver?.freq);
+      }
     }
 
     const signature = input.wires.map(w => `${w.startCompId}:${w.startPinId}-${w.endCompId}:${w.endPinId}`).sort().join('|')
       + '#' + input.components.map(c => `${c.id}:${c.value ?? ''}:${c.damaged ? 1 : 0}`).sort().join('|');
-    return { n, devices, sources, gpio, gpioNodes, signature };
+    return { n, devices, sources, gpio, gpioNodes, i2c: board.i2c, signature };
   }
 
   private describe(d: Device, m: Measure, net: Netlist, names: Record<string, string>, warnings: SimWarning[]): CompResult {
@@ -827,11 +842,18 @@ export class CircuitSimulator {
         const powered = m.v >= ESC.vMin && m.v <= ESC.vAbsMax;
         const driver = net.gpio.find(g => g.node === esc.s && g.mode === PIN_MODE.OUTPUT);
         const duty = driver?.duty ?? 0;
+        const freq = driver?.freq;
         const seen = esc.signalPeak >= ESC.vSignalHigh;
-        const throttle = powered && seen ? escThrottle(duty) : 0;
+        const throttle = powered && seen ? escThrottle(duty, freq) : 0;
+        const pulse = escPulseUs(duty, freq);
         r.powered = powered;
         r.speed = escOf(c.value).dir * throttle;
-        r.extra = { throttle, ibec: m.ibec };
+        r.extra = { throttle, ibec: m.ibec, ...(pulse !== undefined ? { pulse } : {}) };
+        if (freq && duty > 0 && (freq < ESC.pulse.freqMin || freq > ESC.pulse.freqMax)) {
+          warnings.push({ key: `esc-freq:${c.id}`, level: 'warn', compId: c.id, text: `${name}: a ${Math.round(freq)} Hz PWM is not an ESC signal. Send ${ESC.pulse.minUs}–${ESC.pulse.maxUs} µs pulses at ${ESC.pulse.freqMin}–${ESC.pulse.freqMax} Hz, e.g. ledcAttach(pin, 400, 14).` });
+        } else if (pulse !== undefined && duty > 0 && duty < 1 && (pulse < ESC.pulse.validMinUs || pulse > ESC.pulse.validMaxUs)) {
+          warnings.push({ key: `esc-pulse:${c.id}`, level: 'warn', compId: c.id, text: `${name}: ${Math.round(pulse)} µs pulses are outside the ${ESC.pulse.minUs}–${ESC.pulse.maxUs} µs an ESC reads, so the motor stays off.` });
+        }
         if (!powered && m.v > -0.5 && m.v < ESC.vMin && (driver || m.v > 0.5)) {
           warnings.push({ key: `esc-pwr:${c.id}`, level: 'warn', compId: c.id, text: `${name} has no battery power (${formatSI(m.v, 'V')} on + and -): it needs a 2S–6S LiPo (${ESC.vMin}–${ESC.vMax} V).` });
         }
@@ -853,7 +875,7 @@ export class CircuitSimulator {
         const imu = d as ImuDev;
         r.powered = m.v >= IMU.vMin && m.v <= IMU.vMax;
         if (!r.powered && m.v > 0.5 && m.v < IMU.vMin) warnings.push({ key: `imu:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${IMU.vMin}–${IMU.vMax} V on VCC (has ${formatSI(m.v, 'V')}). Use the 3V3 or 5V pin.` });
-        const sda = net.gpioNodes.get(18), scl = net.gpioNodes.get(19); // A4, A5
+        const sda = net.gpioNodes.get(net.i2c.sda), scl = net.gpioNodes.get(net.i2c.scl); // A4, A5
         const onBus = imu.sda >= 0 && imu.scl >= 0 && imu.sda !== imu.scl && imu.sda === sda && imu.scl === scl;
         if (r.powered && onBus) r.i2c = [IMU.address];
         if (imu.sda >= 0 && imu.scl >= 0 && imu.sda === scl && imu.scl === sda) {
@@ -876,13 +898,14 @@ export class CircuitSimulator {
   }
 }
 
-interface GpioInfo { pin: number; node: number; mode: number; duty: number; dev: SourceDev }
+interface GpioInfo { pin: number; node: number; mode: number; duty: number; freq?: number; dev: SourceDev }
 interface Netlist {
   n: number;
   devices: Device[];
   sources: SourceDev[];
   gpio: GpioInfo[];
   gpioNodes: Map<number, number>;
+  i2c: { sda: number; scl: number };
   signature: string;
 }
 

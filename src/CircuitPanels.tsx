@@ -19,6 +19,7 @@ const EXTRA_ROWS: Record<string, [label: string, format: (v: number) => string]>
   ib: ['Base current', v => formatSI(v, 'A')],
   vcell: ['Per cell', v => formatSI(v, 'V')],
   throttle: ['Throttle', v => `${Math.round(v * 100)}%`],
+  pulse: ['Signal pulse', v => `${Math.round(v)} µs`],
   ibec: ['BEC current', v => formatSI(Math.abs(v) < 1e-6 ? 0 : v, 'A')], // hide solver noise on an unloaded BEC
 };
 
@@ -33,8 +34,8 @@ const RATINGS: Partial<Record<string, string>> = {
   Motor: 'Small DC motor — ≈ 100 mA to start, ≈ 400 mA full speed',
   Buzzer: 'Active buzzer — polarised, 3–5 V',
   LiPo: `1500 mAh 75C — ${LIPO.rCell * 1000} mΩ per cell, ${formatSI(LIPO.iMax, 'A')} continuous, ${LIPO.vCellEmpty}–${LIPO.vCellFull} V per cell`,
-  ESC: `${ESC.iRated} A ESC — 2S–6S (${ESC.vMin}–${ESC.vMax} V), signal ≤ ${ESC.vSignalMax} V (throttle = PWM duty), BEC ${ESC.bec.v} V ${ESC.bec.iMax} A`,
-  IMU: `GY-521 — ${IMU.vMin}–${IMU.vMax} V supply, ${formatSI(IMU.rPullup, 'Ω')} I2C pull-ups to its 3.3 V regulator; answers at 0x68 on A4 (SDA) / A5 (SCL) as a level, motionless sensor`,
+  ESC: `${ESC.iRated} A ESC — 2S–6S (${ESC.vMin}–${ESC.vMax} V), signal ≤ ${ESC.vSignalMax} V (throttle = ${ESC.pulse.minUs}–${ESC.pulse.maxUs} µs pulse with ledcAttach, PWM duty with analogWrite), BEC ${ESC.bec.v} V ${ESC.bec.iMax} A`,
+  IMU: `GY-521 — ${IMU.vMin}–${IMU.vMax} V supply, ${formatSI(IMU.rPullup, 'Ω')} I2C pull-ups to its 3.3 V regulator; answers at 0x68 on the board's A4 (SDA) / A5 (SCL) as a level, motionless sensor`,
   ELRS: `ExpressLRS receiver — ${ELRS.vMin}–${ELRS.vMax} V supply, 3.3 V UART (RX not 5 V tolerant)`,
 };
 

@@ -16,7 +16,7 @@ A powerful, interactive 3D Arduino simulator built with React Three Fiber and El
   - **Inputs**: Pushbuttons, Slide Switches, Potentiometers.
   - **Outputs**: LEDs, Buzzers, DC Motors, Servo Motors, OLED Displays.
   - **Passives**: Resistors, Capacitors, Inductors, Transistors, Diodes.
-  - **Drone**: LiPo battery (cell count and charge, e.g. `4S 3.9V`), ESC with brushless motor and propeller (throttle from the signal's PWM duty, 5 V BEC), MPU-6050 / GY-521 IMU (answers at 0x68 through `Wire` when powered and wired to A4 SDA / A5 SCL, as a level, motionless sensor) and ExpressLRS receiver (electrical only: no UART data).
+  - **Drone**: LiPo battery (cell count and charge, e.g. `4S 3.9V`), ESC with brushless motor and propeller (5 V BEC; with `ledcAttach()` at 40-500 Hz it reads the 1000-2000 µs pulse like a real ESC, with `analogWrite()` the PWM duty is the throttle), MPU-6050 / GY-521 IMU (answers at 0x68 through `Wire` when powered and wired to the board's A4 SDA / A5 SCL, as a level, motionless sensor) and ExpressLRS receiver (electrical only: `Serial1`, and `Serial0` on the Nano ESP32, exist but carry no data).
   - **Boards**: Arduino UNO Q (ABX00162) or Arduino Nano ESP32 (ABX00083) as the main board, picked from the toolbar, plus standard half-size breadboards (400 tie-points).
 - **Integrated Code Editor**: Built-in Monaco editor (the engine behind VS Code) for writing standard Arduino C++ code.
 - **Two main boards**: choose **Arduino UNO Q** or **Arduino Nano ESP32** in the toolbar. The sketch is compiled for the selected board, and the scene shows only that board, so you can see exactly which connections each circuit needs.
