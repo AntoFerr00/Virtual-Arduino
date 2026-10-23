@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ExternalComponent } from './App';
 import type { CompResult, SimOutput, SimWarning } from './circuit/simulator';
-import { LED_COLORS, LED, RESISTOR_P_MAX, POT_P_MAX, BJT, DIODE } from './circuit/components';
+import { LED_COLORS, LED, RESISTOR_P_MAX, POT_P_MAX, BJT, DIODE, LIPO, ESC, IMU, ELRS } from './circuit/components';
 import { formatSI } from './circuit/units';
 import { WIRE_COLORS } from './wireColors';
 
@@ -10,6 +10,16 @@ const VALUE_LABEL: Partial<Record<string, string>> = {
   Potentiometer: 'Total resistance',
   Capacitor: 'Capacitance (≥ 1 µF = polarised electrolytic)',
   Inductor: 'Inductance',
+  LiPo: 'Cells and charge (e.g. 4S 3.9V per cell, or 4S 15.6V)',
+  ESC: 'Prop direction and full-throttle current (e.g. CW 15A, CCW 15A)',
+};
+
+// Part-specific readings shown under voltage / current / power.
+const EXTRA_ROWS: Record<string, [label: string, format: (v: number) => string]> = {
+  ib: ['Base current', v => formatSI(v, 'A')],
+  vcell: ['Per cell', v => formatSI(v, 'V')],
+  throttle: ['Throttle', v => `${Math.round(v * 100)}%`],
+  ibec: ['BEC current', v => formatSI(Math.abs(v) < 1e-6 ? 0 : v, 'A')], // hide solver noise on an unloaded BEC
 };
 
 const RATINGS: Partial<Record<string, string>> = {
@@ -22,6 +32,10 @@ const RATINGS: Partial<Record<string, string>> = {
   OLED: 'SSD1306 module — 3–5.5 V supply',
   Motor: 'Small DC motor — ≈ 100 mA to start, ≈ 400 mA full speed',
   Buzzer: 'Active buzzer — polarised, 3–5 V',
+  LiPo: `1500 mAh 75C — ${LIPO.rCell * 1000} mΩ per cell, ${formatSI(LIPO.iMax, 'A')} continuous, ${LIPO.vCellEmpty}–${LIPO.vCellFull} V per cell`,
+  ESC: `${ESC.iRated} A ESC — 2S–6S (${ESC.vMin}–${ESC.vMax} V), signal ≤ ${ESC.vSignalMax} V (throttle = PWM duty), BEC ${ESC.bec.v} V ${ESC.bec.iMax} A`,
+  IMU: `GY-521 — ${IMU.vMin}–${IMU.vMax} V supply, ${formatSI(IMU.rPullup, 'Ω')} I2C pull-ups to its 3.3 V regulator; answers at 0x68 on A4 (SDA) / A5 (SCL) as a level, motionless sensor`,
+  ELRS: `ExpressLRS receiver — ${ELRS.vMin}–${ELRS.vMax} V supply, 3.3 V UART (RX not 5 V tolerant)`,
 };
 
 const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0' };
@@ -80,7 +94,9 @@ export function PropertiesPanel({ comp, name, result, onValue, onReplace, onDele
           <div style={row}><span>Voltage</span><b>{formatSI(result.v, 'V')}</b></div>
           <div style={row}><span>Current</span><b>{formatSI(result.i, 'A')}</b></div>
           <div style={row}><span>Power</span><b>{formatSI(result.p, 'W')}</b></div>
-          {result.extra?.ib !== undefined && <div style={row}><span>Base current</span><b>{formatSI(result.extra.ib, 'A')}</b></div>}
+          {Object.entries(result.extra ?? {}).filter(([k]) => k in EXTRA_ROWS).map(([k, v]) => (
+            <div key={k} style={row}><span>{EXTRA_ROWS[k][0]}</span><b>{EXTRA_ROWS[k][1](v)}</b></div>
+          ))}
           {result.stress > 0 && (
             <div style={{ marginTop: 6 }}>
               <div style={{ ...row, color: '#aaa' }}><span>Load vs rating</span><span>{Math.round(result.stress * 100)}%</span></div>

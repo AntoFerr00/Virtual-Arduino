@@ -1,4 +1,6 @@
 #include "Arduino.h"
+#include "Wire.h"
+#include <condition_variable>
 
 SerialMock Serial;
 static auto startTime = std::chrono::steady_clock::now();
@@ -65,14 +67,46 @@ std::string String::fixed(double v, int decimals) {
 // ---------------------------------------------------------------------------
 // Inputs from the circuit simulation:
 // {"pin": X, "val": <digital level>, "analog": <millivolts at the pin>}
+// plus {"i2c": [...]} for the I2C bus and {"ready": 1} once it has sent the whole circuit state.
 // ---------------------------------------------------------------------------
 
 struct Interrupt { void (*isr)(); int mode; };
 static std::map<uint8_t, Interrupt> interrupts;
 
+static std::mutex readyMutex;
+static std::condition_variable readyCv;
+static bool inputsReady = false;
+
+// {"i2c": [104, ...]}: addresses that answer on the I2C bus (A4/A5).
+static void parseI2cBus(const std::string& line, size_t pos) {
+    std::vector<int> addresses;
+    size_t i = line.find('[', pos);
+    size_t end = line.find(']', pos);
+    if (i == std::string::npos || end == std::string::npos) return;
+    for (i++; i < end; i++) {
+        if (isdigit((unsigned char)line[i])) {
+            size_t used = 0;
+            addresses.push_back(std::stoi(line.substr(i), &used));
+            i += used - 1;
+        }
+    }
+    i2cSetBus(addresses);
+}
+
 void inputListenerThread() {
     std::string line;
     while (std::getline(std::cin, line)) {
+        auto i2cPos = line.find("\"i2c\":");
+        if (i2cPos != std::string::npos) {
+            try { parseI2cBus(line, i2cPos); } catch (...) {}
+            continue;
+        }
+        if (line.find("\"ready\":") != std::string::npos) {
+            std::lock_guard<std::mutex> lock(readyMutex);
+            inputsReady = true;
+            readyCv.notify_all();
+            continue;
+        }
         auto pinPos = line.find("\"pin\":");
         auto valPos = line.find("\"val\":");
         auto anPos = line.find("\"analog\":");
@@ -314,6 +348,13 @@ void Arduino_LED_Matrix::sendIPC() {
 int main(int argc, char** argv) {
     std::thread inputThread(inputListenerThread);
     inputThread.detach();
+
+    // Let setup() see the circuit (input levels, I2C devices): wait for the app's first full
+    // state, but not forever, so the sketch still runs on its own.
+    {
+        std::unique_lock<std::mutex> lock(readyMutex);
+        readyCv.wait_for(lock, std::chrono::milliseconds(500), [] { return inputsReady; });
+    }
 
     setup();
     while (true) {

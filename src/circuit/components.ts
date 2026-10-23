@@ -41,12 +41,51 @@ export const OLED = { rLoad: 220, rPullup: 4.7e3, vMin: 3.0, vMax: 5.5, vAbsMax:
 export const INDUCTOR_DCR = 0.2;
 export const ELECTROLYTIC_MIN_C = 1e-6; // >= 1 µF is assumed to be a polarised electrolytic
 
+// 1500 mAh 75C LiPo pack: ≈ 4 mΩ internal resistance per cell, 120 A continuous.
+export const LIPO = { rCell: 0.004, iMax: 120, vCellEmpty: 3.0, vCellFull: 4.2, vCellHv: 4.35 };
+
+// "4S 3.9V" (cell voltage) or "4S 15.6V" (pack voltage); a missing part means a charged 4S.
+export function lipoOf(value?: string): { cells: number; vCell: number } {
+  const s = (value ?? '').replace(',', '.');
+  const cellsMatch = s.match(/(\d+)\s*S/i);
+  const voltsMatch = s.match(/(\d+(?:\.\d+)?)\s*V/i);
+  const cells = Math.min(12, Math.max(1, cellsMatch ? parseInt(cellsMatch[1], 10) : 4));
+  let vCell = voltsMatch ? parseFloat(voltsMatch[1]) : LIPO.vCellFull;
+  if (vCell > 5) vCell /= cells;
+  return { cells, vCell: Math.max(0, vCell) };
+}
+
+// 30 A BLHeli ESC driving a 2207 brushless motor with a 5" prop. The battery current grows with
+// throttle^1.5 (propeller load) up to `iFull` at full throttle on a charged 4S pack; the ESC
+// reads the throttle from the duty of the signal (like a servo) and has a 5 V 2 A BEC.
+export const ESC = {
+  vMin: 6.0, vMax: 25.2, vAbsMax: 26, iRated: 30, vNominal: 16.8, iIdle: 0.03, iFull: 15,
+  rSignal: 100e3, vSignalHigh: 1.5, vSignalMax: 5.0, deadband: 0.02,
+  bec: { v: 5.0, r: 0.05, iMax: 2 },
+};
+
+// "CW 15A": propeller direction (CW / CCW, seen from above) and the current at full throttle.
+export function escOf(value?: string): { dir: 1 | -1; iFull: number } {
+  const s = value ?? '';
+  const amps = s.replace(',', '.').match(/(\d+(?:\.\d+)?)\s*A/i);
+  return { dir: /\bCCW\b/i.test(s) ? -1 : 1, iFull: amps ? Math.max(0, parseFloat(amps[1])) : ESC.iFull };
+}
+
+// GY-521 module: MPU-6050 behind a 3.3 V LDO, with its I2C pull-ups to the LDO output (so a 5 V
+// supply never reaches SDA/SCL). INT is a push-pull output that idles low.
+export const IMU = { address: 0x68, rLoad: 680, rPullup: 4.7e3, vReg: 3.3, vDropout: 0.25, rInt: 1e3, vMin: 3.0, vMax: 5.5, vAbsMax: 6.0 };
+
+// ExpressLRS receiver (ESP8285 + SX1280 behind a 3.3 V LDO): ≈ 60 mA, 3.3 V UART that idles high.
+export const ELRS = { rLoad: 82, vMin: 4.0, vMax: 5.5, vAbsMax: 6.5, vTx: 3.3, rTx: 100, rRx: 1e6, vRxMax: 3.6 };
+
 export const DEFAULT_VALUES: Partial<Record<string, string>> = {
   Resistor: '220Ω',
   Capacitor: '100nF',
   Inductor: '10µH',
   Potentiometer: '10kΩ',
   LED: 'red',
+  LiPo: '4S 4.2V',
+  ESC: 'CW 15A',
 };
 
 export function valueOr(text: string | undefined, fallback: number, min = 0): number {

@@ -39,6 +39,7 @@ function createRunner({ onConsole, onIpc }) {
       const compiler = spawn('g++', [
         sourceFile,
         path.join(MOCK_CORE_DIR, 'Arduino.cpp'),
+        path.join(MOCK_CORE_DIR, 'Wire.cpp'),
         '-I', MOCK_CORE_DIR,
         '-o', exeFile,
         '-std=c++17',
