@@ -16,8 +16,8 @@ function arduinoRunner(): Plugin {
         onConsole: (text: string) => server.ws.send('arduino:console', text),
         onIpc: (msg: unknown) => server.ws.send('arduino:ipc', msg),
       })
-      server.ws.on('arduino:compile', async (data: { id: number; code: string }, client) => {
-        const result = await runner.compileAndRun(data.code)
+      server.ws.on('arduino:compile', async (data: { id: number; code: string; board?: string }, client) => {
+        const result = await runner.compileAndRun(data.code, data.board)
         client.send('arduino:result', { id: data.id, ...result })
       })
       server.ws.on('arduino:stop', () => {

@@ -18,7 +18,8 @@ function createRunner({ onConsole, onIpc }) {
     return true;
   }
 
-  function compileAndRun(code) {
+  // board: 'unoq' (default) or 'nanoesp32'; selects the pin map and APIs of the mock core.
+  function compileAndRun(code, board = 'unoq') {
     stop();
     if (!fs.existsSync(WORKSPACE_DIR)) fs.mkdirSync(WORKSPACE_DIR);
 
@@ -33,7 +34,7 @@ function createRunner({ onConsole, onIpc }) {
     fs.writeFileSync(sourceFile, finalCode, 'utf8');
 
     return new Promise((resolve) => {
-      onConsole('> Compiling...\n');
+      onConsole(`> Compiling for ${board === 'nanoesp32' ? 'Arduino Nano ESP32' : 'Arduino UNO Q'}...\n`);
 
       const compiler = spawn('g++', [
         sourceFile,
@@ -41,6 +42,7 @@ function createRunner({ onConsole, onIpc }) {
         '-I', MOCK_CORE_DIR,
         '-o', exeFile,
         '-std=c++17',
+        ...(board === 'nanoesp32' ? ['-DBOARD_NANO_ESP32'] : []),
         // Windows: static runtime, otherwise the exe loads whichever libstdc++ DLL comes first
         // in PATH (e.g. Git's or an old MinGW's) and crashes before setup() runs.
         ...(process.platform === 'win32' ? ['-static', '-lws2_32'] : ['-pthread']),

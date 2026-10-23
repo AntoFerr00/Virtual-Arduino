@@ -38,13 +38,14 @@ body {
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  gap: 15px;
+  padding: 0 12px;
+  gap: 10px;
+  white-space: nowrap;
 }
 
 .brand {
   font-weight: 800;
-  font-size: 1.2rem;
+  font-size: 1.05rem;
   color: var(--accent);
   margin-right: auto;
 }
@@ -53,9 +54,11 @@ body {
   background: var(--accent);
   color: white;
   border: none;
-  padding: 8px 16px;
+  padding: 8px 14px;
   border-radius: 6px;
+  font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
   transition: all 0.2s;
   display: flex;

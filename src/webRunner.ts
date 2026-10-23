@@ -17,10 +17,10 @@ export function installWebRunner() {
   };
 
   window.electronAPI = {
-    compileAndRun: (code: string) => new Promise(resolve => {
+    compileAndRun: (code: string, board?: string) => new Promise(resolve => {
       const id = ++nextId;
       pending.set(id, resolve);
-      hot.send('arduino:compile', { id, code });
+      hot.send('arduino:compile', { id, code, board });
     }),
     stopRun: async () => hot.send('arduino:stop'),
     sendInput: (msg: unknown) => hot.send('arduino:input', msg),

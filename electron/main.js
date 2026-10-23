@@ -37,7 +37,7 @@ const runner = createRunner({
   onIpc: (msg) => mainWindow.webContents.send('ipc-message', msg),
 });
 
-ipcMain.handle('compile-and-run', (event, code) => runner.compileAndRun(code));
+ipcMain.handle('compile-and-run', (event, code, board) => runner.compileAndRun(code, board));
 
 ipcMain.handle('stop-run', () => {
   if (runner.stop()) mainWindow.webContents.send('console-output', '> Process stopped by user.\n');

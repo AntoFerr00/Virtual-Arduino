@@ -3,6 +3,7 @@ import type { ExternalComponent } from './App';
 import type { CompResult, SimOutput, SimWarning } from './circuit/simulator';
 import { LED_COLORS, LED, RESISTOR_P_MAX, POT_P_MAX, BJT, DIODE } from './circuit/components';
 import { formatSI } from './circuit/units';
+import { WIRE_COLORS } from './wireColors';
 
 const VALUE_LABEL: Partial<Record<string, string>> = {
   Resistor: 'Resistance',
@@ -97,6 +98,54 @@ export function PropertiesPanel({ comp, name, result, onValue, onReplace, onDele
         onClick={onDelete}
       >
         Delete Component
+      </button>
+    </div>
+  );
+}
+
+// Selected jumper wire: what it connects, its colour, delete.
+export function WirePanel({ from, to, color, onColor, onDelete, onClose }: {
+  from: string;
+  to: string;
+  color: string;
+  onColor: (color: string) => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div style={{
+      position: 'absolute', top: 10, right: 10, zIndex: 10,
+      background: 'rgba(20,20,20,0.92)', border: '1px solid #444',
+      borderRadius: 6, padding: 15, color: '#fff', width: 250,
+      boxShadow: '0 4px 12px rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)',
+      display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: '#60a5fa' }}>Wire</h3>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16 }}>&times;</button>
+      </div>
+      <div style={{ fontSize: 12, color: '#ccc', lineHeight: 1.5 }}>{from}<br />↳ {to}</div>
+      <div style={{ fontSize: 12 }}>Colour</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+        {WIRE_COLORS.map(c => (
+          <button
+            key={c.hex}
+            title={c.name}
+            onClick={() => onColor(c.hex)}
+            style={{
+              height: 26, borderRadius: 4, cursor: 'pointer', background: c.hex,
+              border: c.hex === color ? '2px solid #60a5fa' : '1px solid #555',
+              boxShadow: c.hex === color ? '0 0 0 2px rgba(96,165,250,0.35)' : 'none',
+            }}
+          />
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: '#888' }}>Convention: black = GND, red = 5 V, orange = 3.3 V.</div>
+      <button
+        style={{ width: '100%', padding: 10, background: '#cc0000', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+        onClick={onDelete}
+      >
+        Delete Wire
       </button>
     </div>
   );

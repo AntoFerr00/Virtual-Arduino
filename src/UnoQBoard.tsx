@@ -54,7 +54,7 @@ export type BoardPin = {
   id: string;
   pos: [number, number, number];
   label: string;
-  pinType: 'female' | 'male' | 'smd' | 'bottom';
+  pinType: 'female' | 'male' | 'smd' | 'bottom' | 'pad';
   showLabel?: boolean;
   side?: 1 | -1;
 };
@@ -162,7 +162,7 @@ function getGlowTexture() {
 }
 
 // Flat additive halo lying just above the board, to fake LED bloom.
-function Glow({ position, size, color, opacity }: { position: [number, number, number]; size: number; color: THREE.ColorRepresentation; opacity: number }) {
+export function Glow({ position, size, color, opacity }: { position: [number, number, number]; size: number; color: THREE.ColorRepresentation; opacity: number }) {
   if (opacity <= 0) return null;
   return (
     <mesh position={position} rotation={[-Math.PI / 2, 0, 0]} raycast={() => null}>
@@ -492,12 +492,13 @@ function BottomSide({ tex }: { tex: THREE.Texture }) {
 }
 
 // Clickable pin: invisible until hovered/selected; shows its name on hover.
-function PinHitbox({ pin, selected, onClick, onRightClick }: { pin: BoardPin; selected: boolean; onClick: () => void; onRightClick: () => void }) {
+export function PinHitbox({ pin, selected, onClick, onRightClick }: { pin: BoardPin; selected: boolean; onClick: () => void; onRightClick: () => void }) {
   const [hover, setHover] = useState(false);
   const size: [number, number, number] =
     pin.pinType === 'female' ? [0.22, 0.06, 0.22] :
     pin.pinType === 'male' ? [0.12, 0.14, 0.12] :
     pin.pinType === 'smd' ? [0.08, 0.06, 0.12] :
+    pin.pinType === 'pad' ? [0.18, 0.05, 0.2] :
     [0.11, 0.05, 0.12];
   const active = hover || selected;
   return (
