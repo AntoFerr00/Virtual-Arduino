@@ -134,6 +134,9 @@ void inputListenerThread() {
             if (isr) isr(); // runs outside the lock, like a real ISR it may call digitalWrite
         } catch (...) {}
     }
+    // stdin closed: the app stopped the sketch or exited itself. End here instead of running on
+    // as an orphan that keeps the exe locked for the next build.
+    std::_Exit(0);
 }
 
 void attachInterrupt(uint8_t interrupt, void (*isr)(), int mode) {

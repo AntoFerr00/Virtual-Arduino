@@ -2,14 +2,35 @@
 // Shared by the Electron main process and the Vite dev server (web interface).
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
 
-const WORKSPACE_DIR = path.join(__dirname, '..', 'workspace');
 const MOCK_CORE_DIR = path.join(__dirname, 'mock-core');
+
+// Each app / dev server builds in its own folder. Two of them started from the same checkout
+// (`npm run dev` twice, or the desktop app next to it) would otherwise share one main.exe, and
+// Windows cannot overwrite an exe while it runs: the link fails with "Permission denied".
+const BUILD_ROOT = path.join(os.tmpdir(), 'virtual-arduino');
+const BUILD_DIR = path.join(BUILD_ROOT, String(process.pid));
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// Folders left by apps / servers that have exited (their sketches exit with them).
+function pruneOldBuilds() {
+  if (!fs.existsSync(BUILD_ROOT)) return;
+  for (const name of fs.readdirSync(BUILD_ROOT)) {
+    const pid = Number(name);
+    if (!pid || pid === process.pid || isAlive(pid)) continue;
+    try { fs.rmSync(path.join(BUILD_ROOT, name), { recursive: true, force: true }); } catch (e) {}
+  }
+}
 
 // onConsole(text): build log / Serial output; onIpc(msg): IPC_MSG events from the sketch.
 function createRunner({ onConsole, onIpc }) {
   let runnerProcess = null;
+  pruneOldBuilds();
 
   function stop() {
     if (!runnerProcess) return false;
@@ -21,10 +42,10 @@ function createRunner({ onConsole, onIpc }) {
   // board: 'unoq' (default) or 'nanoesp32'; selects the pin map and APIs of the mock core.
   function compileAndRun(code, board = 'unoq') {
     stop();
-    if (!fs.existsSync(WORKSPACE_DIR)) fs.mkdirSync(WORKSPACE_DIR);
+    fs.mkdirSync(BUILD_DIR, { recursive: true });
 
-    const sourceFile = path.join(WORKSPACE_DIR, 'main.cpp');
-    const exeFile = path.join(WORKSPACE_DIR, process.platform === 'win32' ? 'main.exe' : 'main');
+    const sourceFile = path.join(BUILD_DIR, 'main.cpp');
+    const exeFile = path.join(BUILD_DIR, process.platform === 'win32' ? 'main.exe' : 'main');
 
     // We write the code appending the Arduino mock header include if not present
     let finalCode = code;
