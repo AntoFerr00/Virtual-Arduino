@@ -42,7 +42,10 @@ export const SERVO = { rLoad: 500, rSignal: 1e6, vMin: 4.0, vMax: 7.2, vAbsMax: 
 export const SERVO_MODELS = {
   SG90: { label: 'SG90 (9 g)', rLoad: SERVO.rLoad, vMin: SERVO.vMin, vMax: SERVO.vMax, vAbsMax: SERVO.vAbsMax },
   'Micro 1S': { label: 'Micro 1S (2–5 g, e.g. DM-S0020)', rLoad: 900, vMin: 3.4, vMax: 6.0, vAbsMax: 6.5 },
+  // 1.5 g linear servo (GS-1502, AFRC D1015): 21.4 x 15.2 x 6 mm, its slider travels ≈ 9 mm
+  'Linear 1.5g': { label: 'Linear 1.5 g (slider, 9 mm stroke)', rLoad: 1000, vMin: 3.5, vMax: 6.0, vAbsMax: 6.5 },
 } as const;
+export const LINEAR_SERVO_STROKE_MM = 9;
 export type ServoModel = keyof typeof SERVO_MODELS;
 
 export function servoOf(value?: string): (typeof SERVO_MODELS)[ServoModel] {

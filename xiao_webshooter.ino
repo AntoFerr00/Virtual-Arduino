@@ -1,8 +1,8 @@
 // Lanciaragnatele - firmware per Seeed XIAO ESP32-C3
 //
-// Un servo sub-micro spinge con la squadretta la coda della leva della valvola a pinza:
-// a riposo l'elastico tiene la valvola chiusa, il servo la apre di quanto serve.
-// Il servo e' alimentato direttamente dalla LiPo (serve un modello "1S", 3,7-4,2 V).
+// Un servo lineare da 1,5 g, sdraiato nel lanciatore, tira con un tirantino la coda della
+// leva a squadra della valvola a pinza: a riposo l'elastico tiene la valvola chiusa, il servo
+// la apre di quanto serve. Il servo e' alimentato direttamente dalla LiPo (3,7-6 V).
 // Un sensore di forza (FSR) nel palmo fa da grilletto, un pulsante cambia
 // modalita', un motorino a vibrazione conferma la modalita' scelta.
 // Otto LED indirizzabili sul coperchio dell'orologio mostrano due barre:
@@ -34,8 +34,8 @@ const int PIN_BUTTON = 7;   // D5: pulsante verso GND
 const int PIN_SERVO  = 10;  // D10: segnale del servo
 
 // ---------- Taratura del servo (microsecondi, trovali in modalita' taratura) ----------
-const int SERVO_CLOSED_US = 1000;  // squadretta appena staccata dal pattino: valvola chiusa
-const int SERVO_OPEN_US   = 1600;  // valvola tutta aperta
+const int SERVO_CLOSED_US = 1000;  // cursore verso il gomito, tirantino lento: valvola chiusa
+const int SERVO_OPEN_US   = 1600;  // cursore verso la mano: valvola tutta aperta
 const int CAL_MIN_US      = 700;   // escursione usata in modalita' taratura
 const int CAL_MAX_US      = 2100;
 
@@ -50,7 +50,7 @@ const unsigned long BURST_OPEN_MS  = 40;   // durata di ogni pallina in raffica
 const unsigned long BURST_GAP_SLOW = 250;  // pausa tra palline con pressione leggera
 const unsigned long BURST_GAP_FAST = 60;   // pausa tra palline con pressione piena
 const unsigned long SINGLE_OPEN_MS = 60;   // durata del colpo singolo
-const unsigned long SERVO_TRAVEL_MS = 25;  // tempo del servo per aprire la valvola
+const unsigned long SERVO_TRAVEL_MS = 50;  // tempo del cursore per aprire la valvola (circa 6 mm di corsa)
 
 // ---------- Cartuccia ----------
 // La molla dentro la cartuccia spinge meno quando si allunga (cartuccia vuota):
@@ -356,7 +356,7 @@ void setup() {
 
   calibration = digitalRead(PIN_BUTTON) == LOW;
   if (calibration) {
-    Serial.println("Modalita' taratura: togli la leva dal perno prima di provare.");
+    Serial.println("Modalita' taratura: stacca il tirantino dal cursore prima di provare.");
     buzz(5, 80);
   } else {
     buzz(mode + 1, 120);

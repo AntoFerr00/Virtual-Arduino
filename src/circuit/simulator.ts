@@ -471,7 +471,9 @@ const DAMAGE = {
   Servo: { tau: 0.05, instant: 1.0001 },
   OLED: { tau: 0.05, instant: 1.0001 },
   NeoPixel: { tau: 0.05, instant: 1.0001 },
-  LiPo: { tau: 2, instant: 4 },
+  // A LiPo shrugs off brief surges such as charging a capacitor on the supply (≈ 1 ms at several
+  // times its rating on a 200 mAh cell); only a hard short burns it at once.
+  LiPo: { tau: 2, instant: 25 },
   ESC: { tau: 1, instant: 3 },
   IMU: { tau: 0.05, instant: 1.0001 },
   ELRS: { tau: 0.05, instant: 1.0001 },

@@ -4,7 +4,7 @@
     { "id": "LiPo_ws", "type": "LiPo", "x": 5.9, "z": 3.7, "state": 0, "value": "1S 3.9V 200mAh" },
     { "id": "Switch_ws", "type": "Switch", "x": 3.0, "z": 3.4, "state": 1, "value": "" },
     { "id": "Capacitor_ws", "type": "Capacitor", "x": 2.2, "z": 2.3, "state": 0, "value": "470µF" },
-    { "id": "Servo_ws", "type": "Servo", "x": 3.2, "z": -1.9, "state": 0, "value": "Micro 1S" },
+    { "id": "Servo_ws", "type": "Servo", "x": 3.2, "z": -1.9, "state": 0, "value": "Linear 1.5g" },
     { "id": "Resistor_div_top", "type": "Resistor", "x": 1.7, "z": 4.6, "state": 0, "value": "100kΩ" },
     { "id": "Resistor_div_bottom", "type": "Resistor", "x": -1.7, "z": 4.6, "state": 0, "value": "100kΩ" },
     { "id": "FSR_ws", "type": "FSR", "x": -3.6, "z": -2.6, "state": 0, "value": "2 kg" },

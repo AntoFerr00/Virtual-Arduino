@@ -8,7 +8,7 @@ import { SILK_FONT, Glow } from './UnoQBoard';
 import type { BoardDef } from './boards';
 import type { SimOutput, CompResult } from './circuit/simulator';
 import { parseValue } from './circuit/units';
-import { ESC, escOf, lipoOf, fsrForceOf, NEOPIXEL } from './circuit/components';
+import { ESC, escOf, lipoOf, fsrForceOf, NEOPIXEL, LINEAR_SERVO_STROKE_MM } from './circuit/components';
 
 interface Board3DProps {
   board: BoardDef;
@@ -393,15 +393,32 @@ function ExtServo({ comp, sim, onClick, onRightClick, onDragStart, onDrag, onDra
   const target = (sim as CompResult | undefined)?.angle;
   if (target !== undefined) held.current = target;
   const angle = (held.current / 255) * Math.PI;
+  const linear = comp.value === 'Linear 1.5g';
+  // Linear servo: flat 21.4 x 15.2 x 6 mm body lying beside its leads, slider on top.
+  const slide = (held.current / 255 - 0.5) * (LINEAR_SERVO_STROKE_MM / 10);
   return (
     <group position={[comp.x, 0, comp.z]} {...(bind() as any)} onContextMenu={(e) => { e.stopPropagation(); onRightClick(); }}>
-      <Box args={[0.8, 0.6, 0.4]} position={[0, 0.3, 0]}><meshStandardMaterial color="#1e40af" /></Box>
-      <Box args={[1.0, 0.1, 0.4]} position={[0, 0.5, 0]}><meshStandardMaterial color="#1e40af" /></Box>
-      <SilkscreenText text={comp.value === 'Micro 1S' ? 'MICRO 1S' : 'SG90'} position={[-0.18, 0.4, 0.201]} size={0.09} />
-      <group position={[0.2, 0.65, 0]} rotation={[0, angle, 0]}>
-        <Cylinder args={[0.15, 0.15, 0.1]} position={[0, 0, 0]}><meshStandardMaterial color="#fff" /></Cylinder>
-        <Box args={[0.1, 0.05, 0.6]} position={[0, 0.05, 0]}><meshStandardMaterial color="#fff" /></Box>
-      </group>
+      {linear ? (
+        <group position={[0.9, 0, -0.9]}>
+          <Box args={[2.14, 0.6, 1.52]} position={[0, 0.3, 0]}><meshStandardMaterial color="#27272a" /></Box>
+          <Box args={[1.4, 0.04, 0.12]} position={[0, 0.62, 0.45]}><meshStandardMaterial color="#111" /></Box>
+          <group position={[slide, 0.7, 0.45]}>
+            <Box args={[0.3, 0.16, 0.3]}><meshStandardMaterial color="#f4f4f2" /></Box>
+            <Cylinder args={[0.04, 0.04, 0.17, 12]}><meshStandardMaterial color="#444" /></Cylinder>
+          </group>
+          <SilkscreenText text="LINEAR 1.5G" position={[0, 0.61, -0.25]} rotation={flat} size={0.13} />
+        </group>
+      ) : (
+        <>
+          <Box args={[0.8, 0.6, 0.4]} position={[0, 0.3, 0]}><meshStandardMaterial color="#1e40af" /></Box>
+          <Box args={[1.0, 0.1, 0.4]} position={[0, 0.5, 0]}><meshStandardMaterial color="#1e40af" /></Box>
+          <SilkscreenText text={comp.value === 'Micro 1S' ? 'MICRO 1S' : 'SG90'} position={[-0.18, 0.4, 0.201]} size={0.09} />
+          <group position={[0.2, 0.65, 0]} rotation={[0, angle, 0]}>
+            <Cylinder args={[0.15, 0.15, 0.1]} position={[0, 0, 0]}><meshStandardMaterial color="#fff" /></Cylinder>
+            <Box args={[0.1, 0.05, 0.6]} position={[0, 0.05, 0]}><meshStandardMaterial color="#fff" /></Box>
+          </group>
+        </>
+      )}
       <Cylinder args={[0.02, 0.02, 0.5]} position={[-0.3, 0.1, 0.2]} rotation={[Math.PI/2, 0, 0]}><meshStandardMaterial color="#ef4444" /></Cylinder>
       <Cylinder args={[0.02, 0.02, 0.5]} position={[-0.3, 0.1, 0.3]} rotation={[Math.PI/2, 0, 0]}><meshStandardMaterial color="#8b4513" /></Cylinder>
       <Cylinder args={[0.02, 0.02, 0.5]} position={[-0.3, 0.1, 0.4]} rotation={[Math.PI/2, 0, 0]}><meshStandardMaterial color="#f59e0b" /></Cylinder>
