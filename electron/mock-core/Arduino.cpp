@@ -1,6 +1,12 @@
 #include "Arduino.h"
+#include "Wire.h"
+#include <condition_variable>
 
 SerialMock Serial;
+SerialMock Serial1(false);
+#ifdef MOCK_ESP32
+SerialMock Serial0(false);
+#endif
 static auto startTime = std::chrono::steady_clock::now();
 
 std::map<uint8_t, int> pinStates;
@@ -31,9 +37,11 @@ static void emitIpc(const std::string& json) {
     atLineStart = true;
 }
 
+void mockEmitIpc(const std::string& json) { emitIpc(json); }
+
 size_t SerialMock::print(const char* s) {
     std::string text(s ? s : "");
-    writeOut(text);
+    if (console) writeOut(text);
     return text.size();
 }
 
@@ -43,7 +51,7 @@ size_t SerialMock::printf(const char* format, ...) {
     va_start(args, format);
     int n = vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
-    writeOut(buf);
+    if (console) writeOut(buf);
     return n > 0 ? (size_t)n : 0;
 }
 
@@ -65,14 +73,46 @@ std::string String::fixed(double v, int decimals) {
 // ---------------------------------------------------------------------------
 // Inputs from the circuit simulation:
 // {"pin": X, "val": <digital level>, "analog": <millivolts at the pin>}
+// plus {"i2c": [...]} for the I2C bus and {"ready": 1} once it has sent the whole circuit state.
 // ---------------------------------------------------------------------------
 
 struct Interrupt { void (*isr)(); int mode; };
 static std::map<uint8_t, Interrupt> interrupts;
 
+static std::mutex readyMutex;
+static std::condition_variable readyCv;
+static bool inputsReady = false;
+
+// {"i2c": [104, ...]}: addresses that answer on the I2C bus (A4/A5).
+static void parseI2cBus(const std::string& line, size_t pos) {
+    std::vector<int> addresses;
+    size_t i = line.find('[', pos);
+    size_t end = line.find(']', pos);
+    if (i == std::string::npos || end == std::string::npos) return;
+    for (i++; i < end; i++) {
+        if (isdigit((unsigned char)line[i])) {
+            size_t used = 0;
+            addresses.push_back(std::stoi(line.substr(i), &used));
+            i += used - 1;
+        }
+    }
+    i2cSetBus(addresses);
+}
+
 void inputListenerThread() {
     std::string line;
     while (std::getline(std::cin, line)) {
+        auto i2cPos = line.find("\"i2c\":");
+        if (i2cPos != std::string::npos) {
+            try { parseI2cBus(line, i2cPos); } catch (...) {}
+            continue;
+        }
+        if (line.find("\"ready\":") != std::string::npos) {
+            std::lock_guard<std::mutex> lock(readyMutex);
+            inputsReady = true;
+            readyCv.notify_all();
+            continue;
+        }
         auto pinPos = line.find("\"pin\":");
         auto valPos = line.find("\"val\":");
         auto anPos = line.find("\"analog\":");
@@ -96,6 +136,9 @@ void inputListenerThread() {
             if (isr) isr(); // runs outside the lock, like a real ISR it may call digitalWrite
         } catch (...) {}
     }
+    // stdin closed: the app stopped the sketch or exited itself. End here instead of running on
+    // as an orphan that keeps the exe locked for the next build.
+    std::_Exit(0);
 }
 
 void attachInterrupt(uint8_t interrupt, void (*isr)(), int mode) {
@@ -133,7 +176,7 @@ void analogReadResolution(int bits) { adcBits = std::min(16, std::max(1, bits));
 void analogWriteResolution(int bits) { pwmBits = std::min(16, std::max(1, bits)); }
 
 static uint8_t analogPin(uint8_t pin) {
-#ifndef BOARD_NANO_ESP32
+#ifndef MOCK_ESP32
     if (pin <= 5) pin += A0; // UNO: analogRead(0) == analogRead(A0)
 #endif
     return pin;
@@ -151,11 +194,15 @@ int analogRead(uint8_t pin) {
     return (int)std::min(full, std::max(0L, value));
 }
 
-// `value` is in the current analogWrite resolution; the app works with 0-255.
-static void sendPwm(uint8_t pin, uint32_t value, int bits) {
+// `value` is in the current analogWrite resolution; the app works with 0-255. `freq` (Hz) is sent
+// when the sketch set it (LEDC): an ESC or servo on the pin then reads the pulse width, so the
+// exact duty goes along too (at 50 Hz a 1/255 step would be 78 µs, ≈ 7° of servo travel).
+static void sendPwm(uint8_t pin, uint32_t value, int bits, uint32_t freq = 0) {
     const double full = (double)((1UL << bits) - 1);
-    long duty255 = std::lround(std::min(1.0, value / full) * 255.0);
-    emitIpc("{\"action\":\"analogWrite\",\"pin\":" + std::to_string(pin) + ",\"value\":" + std::to_string(duty255) + "}");
+    const double duty = std::min(1.0, value / full);
+    long duty255 = std::lround(duty * 255.0);
+    emitIpc("{\"action\":\"analogWrite\",\"pin\":" + std::to_string(pin) + ",\"value\":" + std::to_string(duty255)
+            + (freq ? ",\"freq\":" + std::to_string(freq) + ",\"duty\":" + String::fixed(duty, 6) : std::string()) + "}");
 }
 
 void analogWrite(uint8_t pin, int val) {
@@ -171,23 +218,24 @@ void noTone(uint8_t pin) {
     sendPwm(pin, 0, 8);
 }
 
-#ifdef BOARD_NANO_ESP32
-static std::map<uint8_t, int> ledcPinBits;     // pin -> resolution
-static std::map<uint8_t, int> ledcChannelBits; // 2.x API: channel -> resolution
+#ifdef MOCK_ESP32
+struct LedcConfig { int bits; uint32_t freq; };
+static std::map<uint8_t, LedcConfig> ledcPins;     // pin -> resolution and frequency
+static std::map<uint8_t, LedcConfig> ledcChannels; // 2.x API: channel -> resolution and frequency
 static std::map<uint8_t, uint8_t> ledcChannelPin;
 
 bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution) {
-    ledcPinBits[pin] = resolution;
+    ledcPins[pin] = { resolution, freq };
     return true;
 }
 
 bool ledcDetach(uint8_t pin) {
-    ledcPinBits.erase(pin);
+    ledcPins.erase(pin);
     return true;
 }
 
 uint32_t ledcSetup(uint8_t channel, uint32_t freq, uint8_t resolution) {
-    ledcChannelBits[channel] = resolution;
+    ledcChannels[channel] = { resolution, freq };
     return freq;
 }
 
@@ -199,11 +247,14 @@ void ledcAttachPin(uint8_t pin, uint8_t channel) {
 bool ledcWrite(uint8_t pinOrChannel, uint32_t duty) {
     auto ch = ledcChannelPin.find(pinOrChannel);
     if (ch != ledcChannelPin.end()) {
-        sendPwm(ch->second, duty, ledcChannelBits.count(pinOrChannel) ? ledcChannelBits[pinOrChannel] : 8);
+        auto cfg = ledcChannels.find(pinOrChannel);
+        if (cfg != ledcChannels.end()) sendPwm(ch->second, duty, cfg->second.bits, cfg->second.freq);
+        else sendPwm(ch->second, duty, 8);
         return true;
     }
-    auto it = ledcPinBits.find(pinOrChannel);
-    sendPwm(pinOrChannel, duty, it != ledcPinBits.end() ? it->second : 8);
+    auto it = ledcPins.find(pinOrChannel);
+    if (it != ledcPins.end()) sendPwm(pinOrChannel, duty, it->second.bits, it->second.freq);
+    else sendPwm(pinOrChannel, duty, 8);
     return true;
 }
 #endif
@@ -251,7 +302,7 @@ void randomSeed(unsigned long seed) {
 // UNO Q LED matrix
 // ---------------------------------------------------------------------------
 
-#ifndef BOARD_NANO_ESP32
+#ifndef MOCK_ESP32
 Arduino_LED_Matrix::Arduino_LED_Matrix() {
     clear();
 }
@@ -314,6 +365,13 @@ void Arduino_LED_Matrix::sendIPC() {
 int main(int argc, char** argv) {
     std::thread inputThread(inputListenerThread);
     inputThread.detach();
+
+    // Let setup() see the circuit (input levels, I2C devices): wait for the app's first full
+    // state, but not forever, so the sketch still runs on its own.
+    {
+        std::unique_lock<std::mutex> lock(readyMutex);
+        readyCv.wait_for(lock, std::chrono::milliseconds(500), [] { return inputsReady; });
+    }
 
     setup();
     while (true) {

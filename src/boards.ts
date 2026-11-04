@@ -1,11 +1,13 @@
 import type { ComponentType } from 'react';
 import { UnoQBoard, PINS as UNO_Q_PINS, BoardPin } from './UnoQBoard';
 import { NanoEsp32Board, NANO_PINS } from './NanoEsp32Board';
-import { UNO_Q_ELECTRICAL, NANO_ESP32_ELECTRICAL, BoardElectrical } from './circuit/board';
+import { XiaoEsp32C3Board, XIAO_PINS } from './XiaoEsp32C3Board';
+import { UNO_Q_ELECTRICAL, NANO_ESP32_ELECTRICAL, XIAO_ESP32C3_ELECTRICAL, BoardElectrical } from './circuit/board';
 import unoQExample from '../test.ino?raw';
 import nanoEsp32Example from '../esp_test.ino?raw';
+import xiaoExample from '../xiao_webshooter.ino?raw';
 
-export type BoardId = 'unoq' | 'nanoesp32';
+export type BoardId = 'unoq' | 'nanoesp32' | 'xiaoc3';
 
 // A main board: what the sketch is compiled for and what the circuit is wired to.
 export interface BoardDef {
@@ -36,6 +38,15 @@ export const BOARDS: Record<BoardId, BoardDef> = {
     Model: NanoEsp32Board,
     camera: [0, 5, 7],
     defaultCode: nanoEsp32Example,
+  },
+  xiaoc3: {
+    id: 'xiaoc3',
+    name: 'Seeed XIAO ESP32C3',
+    electrical: XIAO_ESP32C3_ELECTRICAL,
+    pins: XIAO_PINS,
+    Model: XiaoEsp32C3Board,
+    camera: [0, 9, 11], // far enough to frame the web shooter example around the 21 mm board
+    defaultCode: xiaoExample,
   },
 };
 

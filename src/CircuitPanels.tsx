@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ExternalComponent } from './App';
 import type { CompResult, SimOutput, SimWarning } from './circuit/simulator';
-import { LED_COLORS, LED, RESISTOR_P_MAX, POT_P_MAX, BJT, DIODE } from './circuit/components';
+import { LED_COLORS, LED, RESISTOR_P_MAX, POT_P_MAX, BJT, DIODE, LIPO, ESC, IMU, ELRS, SERVO_MODELS, servoOf, SERVO_PULSE, lipoOf, FSR, NEOPIXEL, VIBRO } from './circuit/components';
 import { formatSI } from './circuit/units';
 import { WIRE_COLORS } from './wireColors';
 
@@ -10,7 +10,35 @@ const VALUE_LABEL: Partial<Record<string, string>> = {
   Potentiometer: 'Total resistance',
   Capacitor: 'Capacitance (≥ 1 µF = polarised electrolytic)',
   Inductor: 'Inductance',
+  LiPo: 'Cells, charge and capacity (e.g. 4S 3.9V, or 1S 3.9V 200mAh)',
+  ESC: 'Prop direction and full-throttle current (e.g. CW 15A, CCW 15A)',
+  FSR: 'Force while you hold it down (e.g. 2 kg, 300 g)',
 };
+
+// Part-specific readings shown under voltage / current / power.
+const EXTRA_ROWS: Record<string, [label: string, format: (v: number) => string]> = {
+  ib: ['Base current', v => formatSI(v, 'A')],
+  vcell: ['Per cell', v => formatSI(v, 'V')],
+  throttle: ['Throttle', v => `${Math.round(v * 100)}%`],
+  pulse: ['Signal pulse', v => `${Math.round(v)} µs`],
+  ibec: ['BEC current', v => formatSI(Math.abs(v) < 1e-6 ? 0 : v, 'A')], // hide solver noise on an unloaded BEC
+  force: ['Force', v => (v > 0 ? `${v < 1 ? `${Math.round(v * 1000)} g` : `${v} kg`}` : 'released')],
+  rfsr: ['Sensor resistance', v => (v >= FSR.rOpen ? 'open (> 10 MΩ)' : formatSI(v, 'Ω'))],
+  lit: ['Lit pixels', v => `${v} / ${NEOPIXEL.count}`],
+};
+
+// Ratings that depend on the part's value.
+function ratingOf(comp: ExternalComponent): string | undefined {
+  if (comp.type === 'Servo') {
+    const m = servoOf(comp.value);
+    return `${m.label} — ${m.vMin}–${m.vMax} V supply; signal ${SERVO_PULSE.minUs}–${SERVO_PULSE.maxUs} µs pulses at 50 Hz (with ledcAttach / ESP32Servo), PWM duty with analogWrite`;
+  }
+  if (comp.type === 'LiPo') {
+    const { mAh, rCell, iMax } = lipoOf(comp.value);
+    return `${mAh} mAh — ${formatSI(rCell, 'Ω')} per cell, ${formatSI(iMax, 'A')} continuous, ${LIPO.vCellEmpty}–${LIPO.vCellFull} V per cell`;
+  }
+  return RATINGS[comp.type];
+}
 
 const RATINGS: Partial<Record<string, string>> = {
   LED: `${formatSI(LED.iRated, 'A')} continuous, ${formatSI(LED.iAbsMax, 'A')} max, ${LED.vReverseMax} V reverse`,
@@ -18,10 +46,15 @@ const RATINGS: Partial<Record<string, string>> = {
   Potentiometer: `${formatSI(POT_P_MAX, 'W')}`,
   Transistor: `NPN 2N2222A — Ic ${formatSI(BJT.icMax, 'A')}, ${formatSI(BJT.pMax, 'W')}`,
   Diode: `1N4007 — ${formatSI(DIODE.iMax, 'A')}`,
-  Servo: 'SG90 — 4–7.2 V supply',
   OLED: 'SSD1306 module — 3–5.5 V supply',
+  FSR: `FSR 402 — open (> 10 MΩ) when released, ≈ 16 kΩ at 100 g, ≈ 2 kΩ at 1 kg, ≈ 250 Ω at 10 kg; ≈ ${formatSI(FSR.iMax, 'A')} max. Read it through a divider (10 kΩ to GND). Hold the mouse on the disc to press it.`,
+  NeoPixel: `WS2812B-2020 × ${NEOPIXEL.count} — ${NEOPIXEL.vMin}–${NEOPIXEL.vMax} V, ≈ ${formatSI(NEOPIXEL.iIdle, 'A')} per pixel idle, up to ${formatSI(NEOPIXEL.iChannel * 3, 'A')} per pixel at full white; DIN high above ${NEOPIXEL.vihRatio} × VDD. Driven with Adafruit_NeoPixel.`,
+  Vibro: `1027 coin motor — 3 V nominal (2.5–${VIBRO.vMax} V), ≈ ${formatSI(VIBRO.iFull, 'A')} running. Drive it through a transistor with a flyback diode.`,
   Motor: 'Small DC motor — ≈ 100 mA to start, ≈ 400 mA full speed',
   Buzzer: 'Active buzzer — polarised, 3–5 V',
+  ESC: `${ESC.iRated} A ESC — 2S–6S (${ESC.vMin}–${ESC.vMax} V), signal ≤ ${ESC.vSignalMax} V (throttle = ${ESC.pulse.minUs}–${ESC.pulse.maxUs} µs pulse with ledcAttach, PWM duty with analogWrite), BEC ${ESC.bec.v} V ${ESC.bec.iMax} A`,
+  IMU: `GY-521 — ${IMU.vMin}–${IMU.vMax} V supply, ${formatSI(IMU.rPullup, 'Ω')} I2C pull-ups to its 3.3 V regulator; answers at 0x68 on the board's A4 (SDA) / A5 (SCL) as a level, motionless sensor`,
+  ELRS: `ExpressLRS receiver — ${ELRS.vMin}–${ELRS.vMax} V supply, 3.3 V UART (RX not 5 V tolerant)`,
 };
 
 const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0' };
@@ -74,13 +107,23 @@ export function PropertiesPanel({ comp, name, result, onValue, onReplace, onDele
           </select>
         </label>
       )}
+      {comp.type === 'Servo' && (
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12 }}>
+          Model
+          <select value={comp.value && comp.value in SERVO_MODELS ? comp.value : 'SG90'} onChange={e => onValue(e.target.value)} style={input}>
+            {Object.entries(SERVO_MODELS).map(([k, m]) => <option key={k} value={k}>{m.label}, {m.vMin}–{m.vMax} V</option>)}
+          </select>
+        </label>
+      )}
 
       {showMeasures && (
         <div style={{ borderTop: '1px solid #333', paddingTop: 8 }}>
           <div style={row}><span>Voltage</span><b>{formatSI(result.v, 'V')}</b></div>
           <div style={row}><span>Current</span><b>{formatSI(result.i, 'A')}</b></div>
           <div style={row}><span>Power</span><b>{formatSI(result.p, 'W')}</b></div>
-          {result.extra?.ib !== undefined && <div style={row}><span>Base current</span><b>{formatSI(result.extra.ib, 'A')}</b></div>}
+          {Object.entries(result.extra ?? {}).filter(([k]) => k in EXTRA_ROWS).map(([k, v]) => (
+            <div key={k} style={row}><span>{EXTRA_ROWS[k][0]}</span><b>{EXTRA_ROWS[k][1](v)}</b></div>
+          ))}
           {result.stress > 0 && (
             <div style={{ marginTop: 6 }}>
               <div style={{ ...row, color: '#aaa' }}><span>Load vs rating</span><span>{Math.round(result.stress * 100)}%</span></div>
@@ -91,7 +134,7 @@ export function PropertiesPanel({ comp, name, result, onValue, onReplace, onDele
           )}
         </div>
       )}
-      {RATINGS[comp.type] && <div style={{ fontSize: 11, color: '#888' }}>Rating: {RATINGS[comp.type]}</div>}
+      {ratingOf(comp) && <div style={{ fontSize: 11, color: '#888' }}>Rating: {ratingOf(comp)}</div>}
 
       <button
         style={{ width: '100%', padding: 10, background: '#cc0000', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
@@ -182,7 +225,7 @@ export function WarningsPanel({ warnings, onSelect }: { warnings: SimWarning[]; 
 export function visualSignature(out: SimOutput): string {
   const parts: string[] = [];
   for (const [id, r] of Object.entries(out.comps)) {
-    parts.push(`${id}:${Math.round((r.brightness ?? 0) * 40)}:${Math.round((r.speed ?? 0) * 20)}:${r.sounding ? 1 : 0}:${r.powered ? 1 : 0}:${r.angle ?? ''}`);
+    parts.push(`${id}:${Math.round((r.brightness ?? 0) * 40)}:${Math.round((r.speed ?? 0) * 20)}:${r.sounding ? 1 : 0}:${r.powered ? 1 : 0}:${r.angle ?? ''}:${r.pixels?.join(',') ?? ''}:${r.extra?.rfsr ?? ''}`);
   }
   for (const w of out.warnings) parts.push(w.key);
   for (const b of out.burnt) parts.push(`burnt:${b.id}`);

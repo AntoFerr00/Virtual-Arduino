@@ -3,8 +3,11 @@
 
 // Mock Arduino core: sketches are compiled natively and exchange pin states with the app's
 // circuit simulation over stdin/stdout. The board is selected at compile time:
-//   (default)            Arduino UNO Q      (ABX00162, STM32U585 MCU side)
-//   -DBOARD_NANO_ESP32   Arduino Nano ESP32 (ABX00083, ESP32-S3)
+//   (default)             Arduino UNO Q             (ABX00162, STM32U585 MCU side)
+//   -DBOARD_NANO_ESP32    Arduino Nano ESP32        (ABX00083, ESP32-S3)
+//   -DBOARD_XIAO_ESP32C3  Seeed Studio XIAO ESP32C3 (ESP32-C3)
+// Both ESP32 boards also get MOCK_ESP32: LEDC PWM, Serial0, the 12-bit ADC and the mock ESP32
+// libraries (ESP32Servo.h, Preferences.h).
 
 #include <string>
 #include <iostream>
@@ -19,6 +22,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
+#include <cstring>
 
 #define HIGH 0x1
 #define LOW  0x0
@@ -37,10 +41,31 @@
 #define OCT 8
 #define BIN 2
 
-#ifdef BOARD_NANO_ESP32
+#if defined(BOARD_NANO_ESP32) || defined(BOARD_XIAO_ESP32C3)
+#define MOCK_ESP32
+#endif
+
+#if defined(BOARD_NANO_ESP32)
 // ---- Arduino Nano ESP32 -------------------------------------------------------
 #define ARDUINO_NANO_ESP32
+#define ARDUINO_ARCH_ESP32
 #define ESP32
+// Digital pins by Arduino number (the Nano ESP32 default pin numbering)
+#define D0 0
+#define D1 1
+#define D2 2
+#define D3 3
+#define D4 4
+#define D5 5
+#define D6 6
+#define D7 7
+#define D8 8
+#define D9 9
+#define D10 10
+#define D11 11
+#define D12 12
+#define D13 13
+#define SERIAL_8N1 0x800001c
 #define LED_BUILTIN 13 // D13 (GPIO48), shared with the header pin
 // Onboard RGB LED, active LOW (write LOW to light a colour)
 #define LED_RED   14
@@ -55,6 +80,40 @@
 #define A5 22
 #define A6 23
 #define A7 24
+#define ADC_DEFAULT_BITS 12
+#elif defined(BOARD_XIAO_ESP32C3)
+// ---- Seeed Studio XIAO ESP32C3 --------------------------------------------------
+// Pins are ESP32-C3 GPIO numbers, as in the Arduino-ESP32 XIAO_ESP32C3 variant; D0-D10 name the
+// header pins. The board has no user LED (its charge LED is not driven by the MCU).
+#define ARDUINO_XIAO_ESP32C3
+#define ARDUINO_ARCH_ESP32
+#define ESP32
+#define CONFIG_IDF_TARGET_ESP32C3 1
+#define D0 2
+#define D1 3
+#define D2 4
+#define D3 5
+#define D4 6
+#define D5 7
+#define D6 21
+#define D7 20
+#define D8 8
+#define D9 9
+#define D10 10
+// Analog inputs: only D0-D3 (GPIO2-5) reach the ADC
+#define A0 2
+#define A1 3
+#define A2 4
+#define A3 5
+#define SDA 6
+#define SCL 7
+#define SCK 8
+#define MISO 9
+#define MOSI 10
+#define SS 20
+#define TX 21
+#define RX 20
+#define SERIAL_8N1 0x800001c
 #define ADC_DEFAULT_BITS 12
 #else
 // ---- Arduino UNO Q ------------------------------------------------------------
@@ -99,6 +158,10 @@ typedef uint16_t word;
 #ifndef PI
 #define PI 3.14159265358979323846
 #endif
+#define HALF_PI 1.57079632679489661923
+#define TWO_PI 6.28318530717958647693
+#define DEG_TO_RAD 0.017453292519943295769
+#define RAD_TO_DEG 57.295779513082320877
 
 using std::min;
 using std::max;
@@ -131,7 +194,10 @@ long random(long howBig);
 long random(long howSmall, long howBig);
 void randomSeed(unsigned long seed);
 
-#ifdef BOARD_NANO_ESP32
+// Sends one IPC_MSG line to the app (used by the mock libraries, e.g. Adafruit_NeoPixel).
+void mockEmitIpc(const std::string& json);
+
+#ifdef MOCK_ESP32
 // ESP32 LEDC PWM (Arduino-ESP32 3.x pin-based API, plus the 2.x channel API)
 bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution);
 bool ledcWrite(uint8_t pinOrChannel, uint32_t duty);
@@ -167,10 +233,14 @@ public:
     static std::string fixed(double v, int decimals);
 };
 
-// Serial mock: everything printed goes to the app's Serial Monitor.
+// Serial mock. `Serial` (USB) prints to the app's Serial Monitor. The UART on D0/D1 (`Serial1`,
+// and `Serial0` on the Nano ESP32) is not simulated: what is written there is dropped and nothing
+// is ever received, so a receiver on D0/D1 stays silent.
 class SerialMock {
 public:
+    explicit SerialMock(bool console = true) : console(console) {}
     void begin(unsigned long baudrate) {}
+    void begin(unsigned long baudrate, uint32_t config, int8_t rxPin = -1, int8_t txPin = -1) {}
     void end() {}
     operator bool() const { return true; }
     int available() { return 0; }
@@ -193,11 +263,19 @@ public:
 
     size_t printf(const char* format, ...);
     size_t write(uint8_t c) { return print((char)c); }
+    size_t write(const uint8_t* buf, size_t n) { for (size_t i = 0; i < n; i++) write(buf[i]); return n; }
+
+private:
+    bool console;
 };
 
 extern SerialMock Serial;
+extern SerialMock Serial1;
+#ifdef MOCK_ESP32
+extern SerialMock Serial0;
+#endif
 
-#ifndef BOARD_NANO_ESP32
+#ifndef MOCK_ESP32
 // Arduino_LED_Matrix Mock (UNO Q 8x13 matrix)
 class Arduino_LED_Matrix {
 private:
