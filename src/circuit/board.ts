@@ -95,3 +95,40 @@ export const NANO_ESP32_ELECTRICAL: BoardElectrical = {
   maxInputVoltage: () => 3.6,
   overVoltageNote: () => ' (the Nano ESP32 pins are 3.3 V only)',
 };
+
+// ---------------------------------------------------------------------------
+// Seeed Studio XIAO ESP32C3: ESP32-C3 behind an ME6211 3.3 V LDO (≈ 700 mA). Every pin is
+// 3.3 V only. The header pins are GPIO numbers (D0 = GPIO2 … D10 = GPIO10, D6/D7 = GPIO21/20);
+// only D0-D3 reach the ADC. 5V is VBUS from the USB-C connector. BAT+/BAT- are pads under the
+// board for a 1S LiPo: the charger tops it up from USB, so with USB plugged in (as the
+// simulation assumes) the battery does not power the 3V3 rail. BAT- is GND.
+// ---------------------------------------------------------------------------
+
+const XIAO_PIN_NAMES: Record<number, string> = {
+  2: 'D0', 3: 'D1', 4: 'D2', 5: 'D3', 6: 'D4', 7: 'D5', 21: 'D6', 20: 'D7', 8: 'D8', 9: 'D9', 10: 'D10',
+};
+
+export const XIAO_ESP32C3_ELECTRICAL: BoardElectrical = {
+  vddIo: 3.3,
+  gpioROut: 30, // ESP32-C3 at the default drive strength
+  iRated: 0.020,
+  iSourceMax: 0.040,
+  iSinkMax: 0.028,
+  pullR: 45e3,
+  rails: {
+    '5V': { v: 5.0, r: 0.1, iLimit: 1.0 }, // VBUS, straight from the USB-C connector
+    '3V3': { v: 3.3, r: 0.15, iLimit: 0.7 }, // ME6211 LDO
+  },
+  maxGpio: 21,
+  i2c: { sda: 6, scl: 7 }, // D4 / D5
+  pinRole(id) {
+    if (id === 'GND' || id === 'BAT-') return { kind: 'gnd' };
+    if (id === '5V') return { kind: 'rail', rail: '5V' };
+    if (id === '3V3') return { kind: 'rail', rail: '3V3' };
+    if (/^\d+$/.test(id)) return { kind: 'gpio', pin: Number(id) };
+    return { kind: 'nc' }; // BAT+: the charger, not a supply the simulation drives
+  },
+  gpioName: pin => (XIAO_PIN_NAMES[pin] ? `${XIAO_PIN_NAMES[pin]} (GPIO${pin})` : `GPIO${pin}`),
+  maxInputVoltage: () => 3.6,
+  overVoltageNote: () => ' (the XIAO ESP32C3 pins are 3.3 V only)',
+};

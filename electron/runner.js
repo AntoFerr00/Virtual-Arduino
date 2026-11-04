@@ -7,6 +7,13 @@ const { spawn } = require('child_process');
 
 const MOCK_CORE_DIR = path.join(__dirname, 'mock-core');
 
+// Main boards the mock core can be compiled for (see mock-core/Arduino.h).
+const BOARDS = {
+  unoq: { name: 'Arduino UNO Q', flags: [] },
+  nanoesp32: { name: 'Arduino Nano ESP32', flags: ['-DBOARD_NANO_ESP32'] },
+  xiaoc3: { name: 'Seeed Studio XIAO ESP32C3', flags: ['-DBOARD_XIAO_ESP32C3'] },
+};
+
 // Each app / dev server builds in its own folder. Two of them started from the same checkout
 // (`npm run dev` twice, or the desktop app next to it) would otherwise share one main.exe, and
 // Windows cannot overwrite an exe while it runs: the link fails with "Permission denied".
@@ -39,10 +46,11 @@ function createRunner({ onConsole, onIpc }) {
     return true;
   }
 
-  // board: 'unoq' (default) or 'nanoesp32'; selects the pin map and APIs of the mock core.
+  // board: 'unoq' (default), 'nanoesp32' or 'xiaoc3'; selects the pin map and APIs of the mock core.
   function compileAndRun(code, board = 'unoq') {
     stop();
     fs.mkdirSync(BUILD_DIR, { recursive: true });
+    const target = BOARDS[board] ?? BOARDS.unoq;
 
     const sourceFile = path.join(BUILD_DIR, 'main.cpp');
     const exeFile = path.join(BUILD_DIR, process.platform === 'win32' ? 'main.exe' : 'main');
@@ -55,7 +63,7 @@ function createRunner({ onConsole, onIpc }) {
     fs.writeFileSync(sourceFile, finalCode, 'utf8');
 
     return new Promise((resolve) => {
-      onConsole(`> Compiling for ${board === 'nanoesp32' ? 'Arduino Nano ESP32' : 'Arduino UNO Q'}...\n`);
+      onConsole(`> Compiling for ${target.name}...\n`);
 
       const compiler = spawn('g++', [
         sourceFile,
@@ -64,7 +72,7 @@ function createRunner({ onConsole, onIpc }) {
         '-I', MOCK_CORE_DIR,
         '-o', exeFile,
         '-std=c++17',
-        ...(board === 'nanoesp32' ? ['-DBOARD_NANO_ESP32'] : []),
+        ...target.flags,
         // Windows: static runtime, otherwise the exe loads whichever libstdc++ DLL comes first
         // in PATH (e.g. Git's or an old MinGW's) and crashes before setup() runs.
         ...(process.platform === 'win32' ? ['-static', '-lws2_32'] : ['-pthread']),
@@ -89,8 +97,9 @@ function createRunner({ onConsole, onIpc }) {
 
         onConsole('> Compilation successful. Running...\n');
 
+        // ARDUINO_VIRTUAL_NVS: the Preferences store, one file per board for this app session.
         const proc = spawn(exeFile, [], {
-          env: { ...process.env, ARDUINO_VIRTUAL_IPC: '1' }
+          env: { ...process.env, ARDUINO_VIRTUAL_IPC: '1', ARDUINO_VIRTUAL_NVS: path.join(BUILD_DIR, `nvs-${board}.txt`) }
         });
         runnerProcess = proc;
 

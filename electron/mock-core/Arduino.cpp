@@ -4,7 +4,7 @@
 
 SerialMock Serial;
 SerialMock Serial1(false);
-#ifdef BOARD_NANO_ESP32
+#ifdef MOCK_ESP32
 SerialMock Serial0(false);
 #endif
 static auto startTime = std::chrono::steady_clock::now();
@@ -36,6 +36,8 @@ static void emitIpc(const std::string& json) {
     std::cout << "IPC_MSG:" << json << std::endl;
     atLineStart = true;
 }
+
+void mockEmitIpc(const std::string& json) { emitIpc(json); }
 
 size_t SerialMock::print(const char* s) {
     std::string text(s ? s : "");
@@ -174,7 +176,7 @@ void analogReadResolution(int bits) { adcBits = std::min(16, std::max(1, bits));
 void analogWriteResolution(int bits) { pwmBits = std::min(16, std::max(1, bits)); }
 
 static uint8_t analogPin(uint8_t pin) {
-#ifndef BOARD_NANO_ESP32
+#ifndef MOCK_ESP32
     if (pin <= 5) pin += A0; // UNO: analogRead(0) == analogRead(A0)
 #endif
     return pin;
@@ -193,12 +195,14 @@ int analogRead(uint8_t pin) {
 }
 
 // `value` is in the current analogWrite resolution; the app works with 0-255. `freq` (Hz) is sent
-// when the sketch set it (LEDC): an ESC on the pin then reads the pulse width.
+// when the sketch set it (LEDC): an ESC or servo on the pin then reads the pulse width, so the
+// exact duty goes along too (at 50 Hz a 1/255 step would be 78 µs, ≈ 7° of servo travel).
 static void sendPwm(uint8_t pin, uint32_t value, int bits, uint32_t freq = 0) {
     const double full = (double)((1UL << bits) - 1);
-    long duty255 = std::lround(std::min(1.0, value / full) * 255.0);
+    const double duty = std::min(1.0, value / full);
+    long duty255 = std::lround(duty * 255.0);
     emitIpc("{\"action\":\"analogWrite\",\"pin\":" + std::to_string(pin) + ",\"value\":" + std::to_string(duty255)
-            + (freq ? ",\"freq\":" + std::to_string(freq) : std::string()) + "}");
+            + (freq ? ",\"freq\":" + std::to_string(freq) + ",\"duty\":" + String::fixed(duty, 6) : std::string()) + "}");
 }
 
 void analogWrite(uint8_t pin, int val) {
@@ -214,7 +218,7 @@ void noTone(uint8_t pin) {
     sendPwm(pin, 0, 8);
 }
 
-#ifdef BOARD_NANO_ESP32
+#ifdef MOCK_ESP32
 struct LedcConfig { int bits; uint32_t freq; };
 static std::map<uint8_t, LedcConfig> ledcPins;     // pin -> resolution and frequency
 static std::map<uint8_t, LedcConfig> ledcChannels; // 2.x API: channel -> resolution and frequency
@@ -298,7 +302,7 @@ void randomSeed(unsigned long seed) {
 // UNO Q LED matrix
 // ---------------------------------------------------------------------------
 
-#ifndef BOARD_NANO_ESP32
+#ifndef MOCK_ESP32
 Arduino_LED_Matrix::Arduino_LED_Matrix() {
     clear();
 }

@@ -15,7 +15,8 @@ declare global {
 }
 
 export type CompType = 'LED' | 'Button' | 'Resistor' | 'Capacitor' | 'Inductor' | 'Diode' | 'Transistor' | 'Potentiometer' | 'Switch' | 'Buzzer' | 'Servo' | 'Motor' | 'OLED' | 'Breadboard'
-  | 'LiPo' | 'ESC' | 'IMU' | 'ELRS';
+  | 'LiPo' | 'ESC' | 'IMU' | 'ELRS'
+  | 'FSR' | 'NeoPixel' | 'Vibro';
 
 export interface ExternalComponent {
   id: string;
@@ -77,6 +78,7 @@ function App() {
   const lastSentRef = useRef(new Map<number, string>());
   const lastBusRef = useRef(''); // I2C addresses last sent to the sketch
   const readySentRef = useRef(false); // the sketch's setup() waits for the first full state
+  const pixelsRef = useRef(new Map<number, number[]>()); // NeoPixel frames sent by the sketch, by GPIO
   const [writeWithoutOutput, setWriteWithoutOutput] = useState<number[]>([]);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
@@ -98,7 +100,9 @@ function App() {
         // Header pins: hand the new level to the circuit simulation.
         const prev = pinDrivesRef.current.get(msg.pin) ?? { mode: PIN_MODE.INPUT, duty: 0 };
         if (msg.action === 'analogWrite') {
-          pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, msg.value / 255)), freq: msg.freq });
+          // `duty` (exact) comes with LEDC outputs, whose pulse width servos and ESCs read.
+          const duty = typeof msg.duty === 'number' ? msg.duty : msg.value / 255;
+          pinDrivesRef.current.set(msg.pin, { mode: PIN_MODE.OUTPUT, duty: Math.min(1, Math.max(0, duty)), freq: msg.freq });
         } else {
           pinDrivesRef.current.set(msg.pin, { ...prev, duty: msg.value ? 1 : 0 });
           if (prev.mode !== PIN_MODE.OUTPUT) setWriteWithoutOutput(w => (w.includes(msg.pin) ? w : [...w, msg.pin]));
@@ -128,6 +132,10 @@ function App() {
       }
       else if (msg.action === 'matrix') {
         setMatrixFrame(msg.frame);
+      }
+      else if (msg.action === 'neopixel' && Array.isArray(msg.pixels)) {
+        // Shown by the WS2812B strips whose DIN the simulation finds wired to this pin.
+        pixelsRef.current.set(msg.pin, msg.pixels);
       }
     });
     return () => {
@@ -161,6 +169,7 @@ function App() {
         pinLabel,
         pins: pinDrivesRef.current,
         running: runningRef.current,
+        pixels: pixelsRef.current,
       }, elapsed);
 
       if (out.burnt.length) {
@@ -220,6 +229,7 @@ function App() {
 
   const resetPins = () => {
     pinDrivesRef.current = new Map();
+    pixelsRef.current = new Map();
     lastSentRef.current = new Map();
     lastBusRef.current = '';
     readySentRef.current = false;
@@ -390,10 +400,10 @@ function App() {
     setOutput(`> Board: ${next.name}${dropped ? ` (${dropped} wire${dropped > 1 ? 's' : ''} to pins it does not have were removed)` : ''}\n`);
   };
 
-  // Buttons, switches and potentiometers only change their own state: what the sketch reads
-  // follows from the circuit simulation.
+  // Buttons, switches, potentiometers and force sensors only change their own state: what the
+  // sketch reads follows from the circuit simulation.
   const onComponentInteract = (id: string, val: number) => {
-    setComponents(prev => prev.map(c => c.id === id && ['Button', 'Switch', 'Potentiometer'].includes(c.type) ? { ...c, state: val } : c));
+    setComponents(prev => prev.map(c => c.id === id && ['Button', 'Switch', 'Potentiometer', 'FSR'].includes(c.type) ? { ...c, state: val } : c));
   };
 
   const onComponentMove = (id: string, x: number, z: number) => {
@@ -470,12 +480,15 @@ function App() {
               <option value="Buzzer">Buzzer</option>
               <option value="Servo">Servo Motor</option>
               <option value="Motor">DC Motor</option>
+              <option value="Vibro">Vibration Motor (coin)</option>
               <option value="OLED">OLED Display</option>
+              <option value="NeoPixel">LED Strip (WS2812B, 8 px)</option>
             </optgroup>
             <optgroup label="Inputs">
               <option value="Button">Pushbutton</option>
               <option value="Switch">Slide Switch</option>
               <option value="Potentiometer">Potentiometer</option>
+              <option value="FSR">Force Sensor (FSR 402)</option>
             </optgroup>
             <optgroup label="Passives">
               <option value="Resistor">Resistor</option>

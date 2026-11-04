@@ -11,6 +11,7 @@ import {
   VT, LED, LED_COLORS, ledColorOf, DIODE, BJT, RESISTOR_P_MAX, POT_P_MAX, BUTTON_R_ON, BUZZER,
   MOTOR, SERVO, OLED, INDUCTOR_DCR, ELECTROLYTIC_MIN_C, valueOr,
   LIPO, lipoOf, ESC, escOf, IMU, ELRS,
+  servoOf, SERVO_PULSE, FSR, fsrResistance, fsrForceOf, NEOPIXEL, VIBRO,
 } from './components';
 import { formatSI } from './units';
 
@@ -32,6 +33,7 @@ export interface CompResult {
   sounding?: boolean;
   angle?: number; // servo, 0..255
   i2c?: number[]; // addresses the part answers on the board's I2C bus (A4 SDA, A5 SCL)
+  pixels?: number[]; // WS2812B strip: 0xRRGGBB per pixel, when powered and fed by the sketch
   extra?: Record<string, number>;
 }
 
@@ -64,6 +66,7 @@ export interface SimInput {
   pinLabel: (pinId: string) => string;
   pins: Map<number, PinDrive>;
   running: boolean;
+  pixels?: Map<number, number[]>; // last NeoPixel frame the sketch sent on each GPIO
 }
 
 const GMIN = 1e-12;
@@ -380,6 +383,35 @@ class ElrsDev extends Device {
   commit(V: Volt) { this.store.set(`${this.comp.id}:vcc`, V(this.vcc) - V(this.gnd)); }
 }
 
+// WS2812B strip: each pixel draws its idle current plus up to `iChannel` per lit colour channel.
+// The frame comes from the sketch (Adafruit_NeoPixel::show) on the GPIO wired to DIN, so the
+// supply load follows what is lit; DIN itself is a high-impedance input.
+class NeoPixelDev extends Device {
+  pin?: number; // GPIO driving DIN
+  frame?: number[];
+  private iLoad = NEOPIXEL.count * NEOPIXEL.iIdle;
+  constructor(comp: ExternalComponent, readonly vdd: number, readonly din: number, readonly gnd: number) { super(comp); }
+  setFrame(pin: number | undefined, frame: number[] | undefined) {
+    this.pin = pin;
+    this.frame = frame;
+    let i = NEOPIXEL.count * NEOPIXEL.iIdle;
+    for (const c of (frame ?? []).slice(0, NEOPIXEL.count)) {
+      i += (((c >> 16) & 0xff) + ((c >> 8) & 0xff) + (c & 0xff)) / 255 * NEOPIXEL.iChannel;
+    }
+    this.iLoad = i;
+  }
+  private get g() { return this.iLoad / NEOPIXEL.vNominal; }
+  stamp(sys: NodalSystem) {
+    sys.addConductance(this.vdd, this.gnd, this.g);
+    sys.addConductance(this.din, this.gnd, 1 / NEOPIXEL.rDin);
+    return false;
+  }
+  measure(V: Volt) {
+    const v = V(this.vdd) - V(this.gnd);
+    return { v, i: v * this.g, p: v * v * this.g, vdin: V(this.din) - V(this.gnd) };
+  }
+}
+
 class SourceDev {
   constructor(readonly node: number, readonly kind: 'rail' | 'gpio', readonly name: string, readonly r: number, private vOf: (ctx: Ctx) => number) {}
   voltage(ctx: Ctx) { return this.vOf(ctx); }
@@ -438,6 +470,7 @@ const DAMAGE = {
   Capacitor: { tau: 0.3, instant: 3 },
   Servo: { tau: 0.05, instant: 1.0001 },
   OLED: { tau: 0.05, instant: 1.0001 },
+  NeoPixel: { tau: 0.05, instant: 1.0001 },
   LiPo: { tau: 2, instant: 4 },
   ESC: { tau: 1, instant: 3 },
   IMU: { tau: 0.05, instant: 1.0001 },
@@ -705,14 +738,23 @@ export class CircuitSimulator {
           devices.push(new LoadDev(c, p('1'), p('2'), MOTOR.r));
           break;
         case 'Servo':
-          devices.push(new LoadDev(c, p('VCC'), p('GND'), SERVO.rLoad, [[p('S'), p('GND'), SERVO.rSignal]]));
+          devices.push(new LoadDev(c, p('VCC'), p('GND'), servoOf(c.value).rLoad, [[p('S'), p('GND'), SERVO.rSignal]]));
+          break;
+        case 'FSR': // pressed while the user holds it down (state 1), with the force in its value
+          devices.push(new ResistorDev(c, p('1'), p('2'), c.state > 0 ? fsrResistance(fsrForceOf(c.value)) : FSR.rOpen));
+          break;
+        case 'NeoPixel':
+          devices.push(new NeoPixelDev(c, p('5V'), p('DIN'), p('GND')));
+          break;
+        case 'Vibro':
+          devices.push(new LoadDev(c, p('+'), p('-'), VIBRO.r));
           break;
         case 'OLED':
           devices.push(new LoadDev(c, p('VCC'), p('GND'), OLED.rLoad, [[p('SCL'), p('VCC'), OLED.rPullup], [p('SDA'), p('VCC'), OLED.rPullup]]));
           break;
         case 'LiPo': {
-          const { cells, vCell } = lipoOf(c.value);
-          devices.push(new LipoDev(c, p('+'), p('-'), cells * vCell, cells * LIPO.rCell));
+          const { cells, vCell, rCell } = lipoOf(c.value);
+          devices.push(new LipoDev(c, p('+'), p('-'), cells * vCell, cells * rCell));
           break;
         }
         case 'ESC':
@@ -768,11 +810,15 @@ export class CircuitSimulator {
         const driver = gpio.find(g => g.node === d.s && g.mode === PIN_MODE.OUTPUT);
         d.setDuty(driver?.duty ?? 0, driver?.freq);
       }
+      if (d instanceof NeoPixelDev) {
+        const pin = dataPinOf(d.din, devices, gpioNodes);
+        d.setFrame(pin, pin !== undefined && input.running ? input.pixels?.get(pin) : undefined);
+      }
     }
 
     const signature = input.wires.map(w => `${w.startCompId}:${w.startPinId}-${w.endCompId}:${w.endPinId}`).sort().join('|')
       + '#' + input.components.map(c => `${c.id}:${c.value ?? ''}:${c.damaged ? 1 : 0}`).sort().join('|');
-    return { n, devices, sources, gpio, gpioNodes, i2c: board.i2c, signature };
+    return { n, devices, sources, gpio, gpioNodes, i2c: board.i2c, vddIo: board.vddIo, signature };
   }
 
   private describe(d: Device, m: Measure, net: Netlist, names: Record<string, string>, warnings: SimWarning[]): CompResult {
@@ -816,20 +862,56 @@ export class CircuitSimulator {
         break;
       }
       case 'Servo': {
-        r.powered = m.v >= SERVO.vMin && m.v <= SERVO.vMax;
+        const model = servoOf(c.value);
+        r.powered = m.v >= model.vMin && m.v <= model.vMax;
         const sNode = (d as LoadDev).extra[0][0];
         const driver = net.gpio.find(g => g.node === sNode && g.mode === PIN_MODE.OUTPUT);
-        r.angle = r.powered && driver ? Math.round(driver.duty * 255) : undefined;
-        if (!r.powered && Math.abs(m.v) > 0.5 && m.v < SERVO.vMin) warnings.push({ key: `servo:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${SERVO.vMin}–${SERVO.vMax} V on VCC (has ${formatSI(m.v, 'V')}). Use the 5V pin.` });
+        const freq = driver?.freq;
+        if (driver && freq) {
+          // Real servo signal (ledcAttach / ESP32Servo): the pulse width sets the angle.
+          const pulse = (driver.duty * 1e6) / freq;
+          r.extra = { pulse };
+          const valid = freq >= SERVO_PULSE.freqMin && freq <= SERVO_PULSE.freqMax && pulse >= SERVO_PULSE.validMinUs && pulse <= SERVO_PULSE.validMaxUs;
+          const pos = Math.min(1, Math.max(0, (pulse - SERVO_PULSE.minUs) / (SERVO_PULSE.maxUs - SERVO_PULSE.minUs)));
+          r.angle = r.powered && valid ? Math.round(pos * 255) : undefined;
+          if (!valid && driver.duty > 0) warnings.push({ key: `servo-sig:${c.id}`, level: 'warn', compId: c.id, text: `${name}: ${Math.round(pulse)} µs pulses at ${Math.round(freq)} Hz are not a servo signal. Send ${SERVO_PULSE.minUs}–${SERVO_PULSE.maxUs} µs pulses at 50 Hz (e.g. ESP32Servo, or ledcAttach(pin, 50, 16)).` });
+        } else {
+          r.angle = r.powered && driver ? Math.round(driver.duty * 255) : undefined;
+        }
+        if (!r.powered && Math.abs(m.v) > 0.5 && m.v < model.vMin) warnings.push({ key: `servo:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${model.vMin}–${model.vMax} V on VCC (has ${formatSI(m.v, 'V')}). ${model.vMin < 3.7 ? 'Use a 1S LiPo or the 5V pin.' : 'Use the 5V pin.'}` });
+        break;
+      }
+      case 'FSR': {
+        const pressed = c.state > 0;
+        const rFsr = pressed ? fsrResistance(fsrForceOf(c.value)) : FSR.rOpen;
+        r.extra = { force: pressed ? fsrForceOf(c.value) : 0, rfsr: rFsr };
+        if (ratio > 1) warnings.push({ key: `fsr:${c.id}`, level: 'warn', compId: c.id, text: `${name} carries ${formatSI(Math.abs(m.i), 'A')}, over the ≈ ${formatSI(FSR.iMax, 'A')} it is rated for. Read it through a divider (e.g. 10 kΩ to GND), not straight across the supply.` });
+        break;
+      }
+      case 'NeoPixel': {
+        const strip = d as NeoPixelDev;
+        r.powered = m.v >= NEOPIXEL.vMin && m.v <= NEOPIXEL.vMax;
+        r.pixels = r.powered && strip.frame ? strip.frame.slice(0, NEOPIXEL.count) : undefined;
+        r.extra = { lit: (strip.frame ?? []).slice(0, NEOPIXEL.count).filter(px => px & 0xffffff).length };
+        if (!r.powered && m.v > 0.5 && m.v < NEOPIXEL.vMin) warnings.push({ key: `np-v:${c.id}`, level: 'warn', compId: c.id, text: `${name} needs ${NEOPIXEL.vMin}–${NEOPIXEL.vMax} V on 5V (has ${formatSI(m.v, 'V')}). Use a 1S LiPo or the 5V pin.` });
+        if (r.powered && strip.pin !== undefined && net.vddIo < NEOPIXEL.vihRatio * m.v) {
+          warnings.push({ key: `np-din:${c.id}`, level: 'warn', compId: c.id, text: `${name}: at ${formatSI(m.v, 'V')} DIN needs ${formatSI(NEOPIXEL.vihRatio * m.v, 'V')} for a high level, more than the ${net.vddIo} V pin gives. Power the strip from a LiPo (≤ 4.7 V) or add a level shifter.` });
+        }
+        break;
+      }
+      case 'Vibro': {
+        const mag = Math.abs(m.i) < VIBRO.iStart ? 0 : Math.min(1, (Math.abs(m.i) - VIBRO.iStart) / (VIBRO.iFull - VIBRO.iStart) + 0.3);
+        r.speed = mag;
+        if (Math.abs(m.v) > VIBRO.vMax + 0.1) warnings.push({ key: `vibro:${c.id}`, level: 'warn', compId: c.id, text: `${name} gets ${formatSI(Math.abs(m.v), 'V')}: it is a 3 V motor (max ${VIBRO.vMax} V). Power it from a 1S LiPo or 3V3.` });
         break;
       }
       case 'OLED':
         r.powered = m.v >= OLED.vMin && m.v <= OLED.vMax;
         break;
       case 'LiPo': {
-        const { cells, vCell } = lipoOf(c.value);
+        const { cells, vCell, iMax } = lipoOf(c.value);
         r.extra = { vcell: m.v / cells };
-        if (ratio > 1) warnings.push({ key: `lipo-i:${c.id}`, level: 'error', compId: c.id, text: `${name} delivers ${formatSI(m.i, 'A')}, over its ${formatSI(LIPO.iMax, 'A')} rating: it is overheating. A shorted LiPo can catch fire.` });
+        if (ratio > 1) warnings.push({ key: `lipo-i:${c.id}`, level: 'error', compId: c.id, text: `${name} delivers ${formatSI(m.i, 'A')}, over its ${formatSI(iMax, 'A')} rating: it is overheating. A shorted LiPo can catch fire.` });
         if (vCell < LIPO.vCellEmpty) {
           warnings.push({ key: `lipo-low:${c.id}`, level: 'warn', compId: c.id, text: `${name} is over-discharged (${formatSI(vCell, 'V')} per cell): below ${LIPO.vCellEmpty} V a LiPo cell is damaged. Recharge it.` });
         } else if (vCell > LIPO.vCellHv + 0.005) {
@@ -906,7 +988,25 @@ interface Netlist {
   gpio: GpioInfo[];
   gpioNodes: Map<number, number>;
   i2c: { sda: number; scl: number };
+  vddIo: number; // the board's GPIO high level
   signature: string;
+}
+
+// GPIO driving a data input such as a WS2812B's DIN, which is usually fed through a series
+// resistor (300-500 Ω): follow resistors up to 10 kΩ, a few hops at most.
+function dataPinOf(node: number, devices: Device[], gpioNodes: Map<number, number>): number | undefined {
+  if (node < 0) return undefined;
+  const pinAt = new Map([...gpioNodes].map(([pin, n]) => [n, pin]));
+  const series = devices.filter((d): d is ResistorDev => d instanceof ResistorDev && d.r <= 10e3);
+  const seen = new Set([node]);
+  let frontier = [node];
+  for (let hop = 0; hop < 3 && frontier.length; hop++) {
+    for (const n of frontier) if (pinAt.has(n)) return pinAt.get(n);
+    frontier = series.flatMap(r => (frontier.includes(r.a) ? [r.b] : frontier.includes(r.b) ? [r.a] : [])).filter(n => n >= 0 && !seen.has(n));
+    frontier.forEach(n => seen.add(n));
+  }
+  for (const n of frontier) if (pinAt.has(n)) return pinAt.get(n);
+  return undefined;
 }
 
 function nodeFn(v: Float64Array): Volt {
@@ -931,11 +1031,17 @@ function stressOf(c: ExternalComponent, m: Measure): { ratio: number; reason: st
       if (valueOr(c.value, 100e-9, 1e-15) < ELECTROLYTIC_MIN_C) return { ratio: 0, reason: '' };
       return { ratio: Math.max(0, -m.v), reason: `electrolytic reversed at ${formatSI(m.v, 'V')}` };
     case 'Servo':
-      return { ratio: m.v / SERVO.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
+      return { ratio: m.v / servoOf(c.value).vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
+    case 'FSR':
+      return { ratio: Math.abs(m.i) / FSR.iMax, reason: `${formatSI(Math.abs(m.i), 'A')} through the sensor` };
+    case 'NeoPixel':
+      return { ratio: m.v / NEOPIXEL.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
+    case 'Vibro':
+      return { ratio: Math.abs(m.v) / VIBRO.vAbsMax, reason: `${formatSI(Math.abs(m.v), 'V')} on a 3 V motor` };
     case 'OLED':
       return { ratio: m.v / OLED.vAbsMax, reason: `${formatSI(m.v, 'V')} supply` };
     case 'LiPo':
-      return { ratio: Math.abs(m.i) / LIPO.iMax, reason: `${formatSI(Math.abs(m.i), 'A')} short-circuit current` };
+      return { ratio: Math.abs(m.i) / lipoOf(c.value).iMax, reason: `${formatSI(Math.abs(m.i), 'A')} short-circuit current` };
     case 'ESC':
       if (m.v < -0.5) return { ratio: 99, reason: `battery connected backwards (${formatSI(m.v, 'V')})` };
       if (m.v > ESC.vAbsMax) return { ratio: 99, reason: `${formatSI(m.v, 'V')} battery, over 6S` };
